@@ -20,6 +20,11 @@
 - Added support for persisting custom environment variables in session defaults ([#235](https://github.com/getsentry/XcodeBuildMCP/pull/235) by [@kamal](https://github.com/kamal)). See [docs/SESSION_DEFAULTS.md](docs/SESSION_DEFAULTS.md#persisting-defaults).
 - Added Kiro client setup instructions ([#222](https://github.com/getsentry/XcodeBuildMCP/pull/222) by [@manojmahapatra](https://github.com/manojmahapatra)).
 
+### Added
+
+- Added `get_coverage_report` tool to show per-target code coverage from xcresult bundles ([#227](https://github.com/getsentry/XcodeBuildMCP/issues/227))
+- Added `get_file_coverage` tool to show function-level coverage and uncovered line ranges for specific files ([#227](https://github.com/getsentry/XcodeBuildMCP/issues/227))
+
 ### Changed
 
 - Faster MCP startup when the Xcode IDE workflow is enabled — tools are available sooner after connecting ([#210](https://github.com/getsentry/XcodeBuildMCP/issues/210)). See [docs/XCODE_IDE_MCPBRIDGE.md](docs/XCODE_IDE_MCPBRIDGE.md).
