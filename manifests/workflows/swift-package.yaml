@@ -8,3 +8,5 @@ tools:
   - swift_package_run
   - swift_package_stop
   - swift_package_list
+  - get_coverage_report
+  - get_file_coverage

@@ -16,3 +16,5 @@ tools:
   - get_app_bundle_id
   - start_device_log_cap
   - stop_device_log_cap
+  - get_coverage_report
+  - get_file_coverage

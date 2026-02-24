@@ -26,3 +26,5 @@ tools:
   - snapshot_ui
   - stop_sim_log_cap
   - start_sim_log_cap
+  - get_coverage_report
+  - get_file_coverage
