@@ -362,6 +362,22 @@ describe('get_file_coverage', () => {
       expect(text).toContain('No coverage data found for "Missing.swift"');
     });
 
+    it('should return no data when targets field is not an array', async () => {
+      const mockExecutor = createMockExecutor({
+        success: true,
+        output: JSON.stringify({ targets: 'not-an-array' }),
+      });
+
+      const result = await get_file_coverageLogic(
+        { xcresultPath: '/tmp/test.xcresult', file: 'Foo.swift', showLines: false },
+        mockExecutor,
+      );
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].type === 'text' ? result.content[0].text : '';
+      expect(text).toContain('No coverage data found for "Foo.swift"');
+    });
+
     it('should handle file entry with no functions gracefully', async () => {
       const noFunctions = [{ file: '/src/Empty.swift', functions: [] }];
       const mockExecutor = createMockExecutor({
