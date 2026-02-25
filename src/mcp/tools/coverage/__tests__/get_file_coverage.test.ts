@@ -255,7 +255,7 @@ describe('get_file_coverage', () => {
       );
 
       const text = result.content[0].type === 'text' ? result.content[0].text : '';
-      expect(text).toContain('Uncovered line ranges:');
+      expect(text).toContain('Uncovered line ranges (/src/MyApp/ViewModel.swift):');
       expect(text).toContain('L4-6');
       expect(text).toContain('L9');
     });

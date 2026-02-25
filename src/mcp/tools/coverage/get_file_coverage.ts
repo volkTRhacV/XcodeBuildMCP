@@ -185,7 +185,7 @@ export async function get_file_coverageLogic(
     if (archiveResult.success && archiveResult.output) {
       const uncoveredRanges = parseUncoveredLines(archiveResult.output);
       if (uncoveredRanges.length > 0) {
-        text += 'Uncovered line ranges:\n';
+        text += `Uncovered line ranges (${filePath}):\n`;
         for (const range of uncoveredRanges) {
           if (range.start === range.end) {
             text += `  L${range.start}\n`;
