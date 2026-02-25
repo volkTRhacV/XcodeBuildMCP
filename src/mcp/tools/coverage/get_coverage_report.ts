@@ -40,6 +40,17 @@ interface CoverageTarget {
   files?: CoverageFile[];
 }
 
+function isValidCoverageTarget(value: unknown): value is CoverageTarget {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as CoverageTarget).name === 'string' &&
+    typeof (value as CoverageTarget).coveredLines === 'number' &&
+    typeof (value as CoverageTarget).executableLines === 'number' &&
+    typeof (value as CoverageTarget).lineCoverage === 'number'
+  );
+}
+
 export async function get_coverage_reportLogic(
   params: GetCoverageReportParams,
   executor: CommandExecutor,
@@ -84,16 +95,16 @@ export async function get_coverage_reportLogic(
   }
 
   // Validate structure: expect an array of target objects or { targets: [...] }
-  let targets: CoverageTarget[] = [];
+  let rawTargets: unknown[] = [];
   if (Array.isArray(data)) {
-    targets = data as CoverageTarget[];
+    rawTargets = data;
   } else if (
     typeof data === 'object' &&
     data !== null &&
     'targets' in data &&
     Array.isArray((data as { targets: unknown }).targets)
   ) {
-    targets = (data as { targets: CoverageTarget[] }).targets;
+    rawTargets = (data as { targets: unknown[] }).targets;
   } else {
     return {
       content: [
@@ -105,6 +116,8 @@ export async function get_coverage_reportLogic(
       isError: true,
     };
   }
+
+  let targets = rawTargets.filter(isValidCoverageTarget);
 
   // Filter by target name if specified
   if (target) {
