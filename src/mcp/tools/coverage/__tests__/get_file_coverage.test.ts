@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createMockExecutor,
+  createMockCommandResponse,
   createCommandMatchingMockExecutor,
 } from '../../../../test-utils/mock-executors.ts';
 import { schema, handler, get_file_coverageLogic } from '../get_file_coverage.ts';
@@ -86,9 +87,9 @@ describe('get_file_coverage', () => {
         commands.push(command);
         callCount++;
         if (callCount === 1) {
-          return { success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 };
+          return createMockCommandResponse({ success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 });
         }
-        return { success: true, output: sampleArchiveOutput, exitCode: 0 };
+        return createMockCommandResponse({ success: true, output: sampleArchiveOutput, exitCode: 0 });
       };
 
       await get_file_coverageLogic(
@@ -243,9 +244,9 @@ describe('get_file_coverage', () => {
       ) => {
         callCount++;
         if (callCount === 1) {
-          return { success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 };
+          return createMockCommandResponse({ success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 });
         }
-        return { success: true, output: sampleArchiveOutput, exitCode: 0 };
+        return createMockCommandResponse({ success: true, output: sampleArchiveOutput, exitCode: 0 });
       };
 
       const result = await get_file_coverageLogic(
@@ -271,9 +272,9 @@ describe('get_file_coverage', () => {
       ) => {
         callCount++;
         if (callCount === 1) {
-          return { success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 };
+          return createMockCommandResponse({ success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 });
         }
-        return { success: true, output: allCoveredArchive, exitCode: 0 };
+        return createMockCommandResponse({ success: true, output: allCoveredArchive, exitCode: 0 });
       };
 
       const result = await get_file_coverageLogic(
@@ -296,9 +297,9 @@ describe('get_file_coverage', () => {
       ) => {
         callCount++;
         if (callCount === 1) {
-          return { success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 };
+          return createMockCommandResponse({ success: true, output: JSON.stringify(sampleFunctionsJson), exitCode: 0 });
         }
-        return { success: false, output: '', error: 'archive error', exitCode: 1 };
+        return createMockCommandResponse({ success: false, output: '', error: 'archive error', exitCode: 1 });
       };
 
       const result = await get_file_coverageLogic(
