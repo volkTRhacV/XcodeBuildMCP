@@ -60,6 +60,10 @@ describe('project-config', () => {
       const yaml = [
         'schemaVersion: 1',
         'enabledWorkflows: simulator,device',
+        'customWorkflows:',
+        '  My-Workflow:',
+        '    - build_run_sim',
+        '    - SCREENSHOT',
         'debug: true',
         'axePath: "./bin/axe"',
         'sessionDefaults:',
@@ -78,6 +82,9 @@ describe('project-config', () => {
 
       const defaults = result.config.sessionDefaults ?? {};
       expect(result.config.enabledWorkflows).toEqual(['simulator', 'device']);
+      expect(result.config.customWorkflows).toEqual({
+        'my-workflow': ['build_run_sim', 'screenshot'],
+      });
       expect(result.config.debug).toBe(true);
       expect(result.config.axePath).toBe(path.join(cwd, 'bin', 'axe'));
       expect(defaults.workspacePath).toBe(path.join(cwd, 'App.xcworkspace'));
@@ -105,6 +112,29 @@ describe('project-config', () => {
       expect(result.config.debuggerBackend).toBe('lldb-cli');
       expect(result.config.iosTemplatePath).toBe(path.join(cwd, 'templates', 'ios'));
       expect(result.config.macosTemplatePath).toBe('/opt/templates/macos');
+    });
+
+    it('normalizes custom workflow entries while loading config', async () => {
+      const yaml = [
+        'schemaVersion: 1',
+        'customWorkflows:',
+        '  valid-workflow:',
+        '    - build_run_sim',
+        '  invalid-workflow: build_run_sim',
+        '  "":',
+        '    - screenshot',
+        '',
+      ].join('\n');
+
+      const { fs } = createFsFixture({ exists: true, readFile: yaml });
+      const result = await loadProjectConfig({ fs, cwd });
+
+      if (!result.found) throw new Error('expected config to be found');
+
+      expect(result.config.customWorkflows).toEqual({
+        'invalid-workflow': ['build_run_sim'],
+        'valid-workflow': ['build_run_sim'],
+      });
     });
 
     it('should resolve file URLs in session defaults and top-level paths', async () => {

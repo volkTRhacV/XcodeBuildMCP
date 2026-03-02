@@ -112,6 +112,35 @@ describe('config-store', () => {
     expect(updated.enabledWorkflows).toEqual(['device']);
   });
 
+  it('resolves customWorkflows from overrides, config, then defaults', async () => {
+    const yaml = [
+      'schemaVersion: 1',
+      'customWorkflows:',
+      '  smoke:',
+      '    - build_run_sim',
+      '',
+    ].join('\n');
+
+    await initConfigStore({ cwd, fs: createFs(yaml) });
+    expect(getConfig().customWorkflows).toEqual({
+      smoke: ['build_run_sim'],
+    });
+
+    await initConfigStore({
+      cwd,
+      fs: createFs(yaml),
+      overrides: {
+        customWorkflows: {
+          quick: ['screenshot'],
+        },
+      },
+    });
+
+    expect(getConfig().customWorkflows).toEqual({
+      quick: ['screenshot'],
+    });
+  });
+
   it('merges namespaced session defaults profiles from file and overrides', async () => {
     const yaml = [
       'schemaVersion: 1',

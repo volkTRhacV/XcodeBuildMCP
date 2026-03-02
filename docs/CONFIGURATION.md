@@ -39,6 +39,11 @@ schemaVersion: 1
 
 # Workflow selection
 enabledWorkflows: ["simulator", "ui-automation", "debugging"]
+customWorkflows:
+  my-workflow:
+    - build_run_sim
+    - record_sim_video
+    - screenshot
 experimentalWorkflowDiscovery: false
 
 # Session defaults
@@ -146,6 +151,25 @@ enabledWorkflows: ["simulator", "ui-automation", "debugging"]
 ```
 
 See [TOOLS.md](TOOLS.md) for available workflows and their tools.
+
+### Custom workflows
+
+You can define your own workflow names in config and reference them from `enabledWorkflows`.
+Each custom workflow is a list of tool names (MCP names), and only those tools are loaded for that workflow.
+
+```yaml
+enabledWorkflows: ["my-workflow"]
+customWorkflows:
+  my-workflow:
+    - build_run_sim
+    - record_sim_video
+    - screenshot
+```
+
+Notes:
+- Built-in implicit workflows are unchanged. Session-management tools are still auto-included, and the doctor workflow is still auto-included when `debug: true`.
+- Custom workflow names are normalized to lowercase.
+- Unknown tool names are ignored and logged as warnings.
 
 To access Xcode IDE tools (Xcode 26+ `xcrun mcpbridge`), enable `xcode-ide`. This workflow exposes `xcode_ide_list_tools` and `xcode_ide_call_tool` for MCP clients. See [XCODE_IDE_MCPBRIDGE.md](XCODE_IDE_MCPBRIDGE.md).
 
@@ -281,6 +305,7 @@ Notes:
 |--------|------|---------|
 | `schemaVersion` | number | Required (`1`) |
 | `enabledWorkflows` | string[] | `["simulator"]` |
+| `customWorkflows` | Record<string, string[]> | `{}` |
 | `experimentalWorkflowDiscovery` | boolean | `false` |
 | `disableSessionDefaults` | boolean | `false` |
 | `sessionDefaults` | object | `{}` |

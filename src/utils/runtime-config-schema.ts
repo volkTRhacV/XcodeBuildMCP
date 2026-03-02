@@ -5,6 +5,7 @@ export const runtimeConfigFileSchema = z
   .object({
     schemaVersion: z.literal(1).optional().default(1),
     enabledWorkflows: z.union([z.array(z.string()), z.string()]).optional(),
+    customWorkflows: z.record(z.string(), z.union([z.array(z.string()), z.string()])).optional(),
     debug: z.boolean().optional(),
     experimentalWorkflowDiscovery: z.boolean().optional(),
     disableSessionDefaults: z.boolean().optional(),

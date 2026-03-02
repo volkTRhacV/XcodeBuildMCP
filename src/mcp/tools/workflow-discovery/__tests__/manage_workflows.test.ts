@@ -5,7 +5,7 @@ vi.mock('../../../../utils/tool-registry.ts', () => ({
   getRegisteredWorkflows: vi.fn(),
   getMcpPredicateContext: vi.fn().mockReturnValue({
     runtime: 'mcp',
-    config: { debug: false },
+    config: { debug: false, customWorkflows: {} },
     runningUnderXcode: false,
   }),
 }));
@@ -15,6 +15,7 @@ vi.mock('../../../../utils/config-store.ts', () => ({
     debug: false,
     experimentalWorkflowDiscovery: false,
     enabledWorkflows: [],
+    customWorkflows: {},
   }),
 }));
 

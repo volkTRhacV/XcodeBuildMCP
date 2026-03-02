@@ -13,6 +13,7 @@ import { normalizeSessionDefaultsProfileName } from './session-defaults-profile.
 
 export type RuntimeConfigOverrides = Partial<{
   enabledWorkflows: string[];
+  customWorkflows: Record<string, string[]>;
   debug: boolean;
   experimentalWorkflowDiscovery: boolean;
   disableSessionDefaults: boolean;
@@ -35,6 +36,7 @@ export type RuntimeConfigOverrides = Partial<{
 
 export type ResolvedRuntimeConfig = {
   enabledWorkflows: string[];
+  customWorkflows: Record<string, string[]>;
   debug: boolean;
   experimentalWorkflowDiscovery: boolean;
   disableSessionDefaults: boolean;
@@ -66,6 +68,7 @@ type ConfigStoreState = {
 
 const DEFAULT_CONFIG: ResolvedRuntimeConfig = {
   enabledWorkflows: [],
+  customWorkflows: {},
   debug: false,
   experimentalWorkflowDiscovery: false,
   disableSessionDefaults: false,
@@ -376,6 +379,13 @@ function resolveConfig(opts: {
       fileConfig: opts.fileConfig,
       envConfig,
       fallback: DEFAULT_CONFIG.enabledWorkflows,
+    }),
+    customWorkflows: resolveFromLayers<Record<string, string[]>>({
+      key: 'customWorkflows',
+      overrides: opts.overrides,
+      fileConfig: opts.fileConfig,
+      envConfig,
+      fallback: DEFAULT_CONFIG.customWorkflows,
     }),
     debug: resolveFromLayers({
       key: 'debug',

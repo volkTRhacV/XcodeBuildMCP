@@ -4,9 +4,9 @@ import type { ToolResponse } from '../types/common.ts';
 import type { ToolCatalog, ToolDefinition } from '../runtime/types.ts';
 import { log } from './logger.ts';
 import { processToolResponse } from './responses/index.ts';
-import { loadManifest } from '../core/manifest/load-manifest.ts';
+import { loadManifest, type ResolvedManifest } from '../core/manifest/load-manifest.ts';
 import { importToolModule } from '../core/manifest/import-tool-module.ts';
-import { getEffectiveCliName } from '../core/manifest/schema.ts';
+import { getEffectiveCliName, type WorkflowManifestEntry } from '../core/manifest/schema.ts';
 import { createToolCatalog } from '../runtime/tool-catalog.ts';
 import { postProcessToolResponse } from '../runtime/tool-invoker.ts';
 import type { PredicateContext } from '../visibility/predicate-types.ts';
@@ -32,6 +32,102 @@ const registryState: {
   currentContext: null,
   catalog: null,
 };
+
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function buildToolAliasMap(manifest: ResolvedManifest): Map<string, string> {
+  const toolIdByAlias = new Map<string, string>();
+  for (const tool of manifest.tools.values()) {
+    toolIdByAlias.set(normalizeName(tool.id), tool.id);
+    toolIdByAlias.set(normalizeName(tool.names.mcp), tool.id);
+  }
+  return toolIdByAlias;
+}
+
+function resolveCustomWorkflowToolIds(
+  toolIdByAlias: Map<string, string>,
+  toolNames: string[],
+): { toolIds: string[]; unknownToolNames: string[] } {
+  const toolIds: string[] = [];
+  const seen = new Set<string>();
+  const unknownToolNames: string[] = [];
+
+  for (const toolName of toolNames) {
+    const normalizedToolName = normalizeName(toolName);
+    if (!normalizedToolName) {
+      continue;
+    }
+    const toolId = toolIdByAlias.get(normalizedToolName);
+    if (!toolId) {
+      unknownToolNames.push(toolName);
+      continue;
+    }
+    if (!seen.has(toolId)) {
+      seen.add(toolId);
+      toolIds.push(toolId);
+    }
+  }
+
+  return { toolIds, unknownToolNames };
+}
+
+export function createCustomWorkflowsFromConfig(
+  manifest: ResolvedManifest,
+  customWorkflows: Record<string, string[]>,
+): { workflows: WorkflowManifestEntry[]; warnings: string[] } {
+  const workflows: WorkflowManifestEntry[] = [];
+  const warnings: string[] = [];
+  const toolIdByAlias = buildToolAliasMap(manifest);
+
+  for (const [rawWorkflowName, rawToolNames] of Object.entries(customWorkflows)) {
+    const workflowName = normalizeName(rawWorkflowName);
+    if (!workflowName) {
+      continue;
+    }
+
+    if (manifest.workflows.has(workflowName)) {
+      warnings.push(
+        `[config] Ignoring custom workflow '${workflowName}' because it conflicts with a built-in workflow.`,
+      );
+      continue;
+    }
+
+    const { toolIds, unknownToolNames } = resolveCustomWorkflowToolIds(toolIdByAlias, rawToolNames);
+    if (unknownToolNames.length > 0) {
+      warnings.push(
+        `[config] Custom workflow '${workflowName}' references unknown tools: ${unknownToolNames.join(', ')}`,
+      );
+    }
+    if (toolIds.length === 0) {
+      warnings.push(
+        `[config] Ignoring custom workflow '${workflowName}' because it resolved to no known tools.`,
+      );
+      continue;
+    }
+
+    workflows.push({
+      id: workflowName,
+      title: workflowName,
+      description: `Custom workflow '${workflowName}' from config.yaml.`,
+      availability: { mcp: true, cli: false },
+      selection: { mcp: { defaultEnabled: false, autoInclude: false } },
+      predicates: [],
+      tools: toolIds,
+    });
+  }
+
+  return { workflows, warnings };
+}
+
+function emitConfigWarningMetric(kind: 'unknown_workflow' | 'invalid_custom_workflow'): void {
+  recordInternalErrorMetric({
+    component: 'config/workflow-selection',
+    runtime: 'mcp',
+    errorKind: kind,
+  });
+}
 
 export function getRuntimeRegistration(): RuntimeToolInfo | null {
   if (registryState.tools.size === 0 && registryState.enabledWorkflows.size === 0) {
@@ -79,10 +175,32 @@ export async function applyWorkflowSelectionFromManifest(
   registryState.currentContext = ctx;
 
   const manifest = loadManifest();
-  const allWorkflows = Array.from(manifest.workflows.values());
+  const customSelection = createCustomWorkflowsFromConfig(manifest, ctx.config.customWorkflows);
+  for (const warning of customSelection.warnings) {
+    log('warning', warning);
+    emitConfigWarningMetric('invalid_custom_workflow');
+  }
+  const allWorkflows = [...manifest.workflows.values(), ...customSelection.workflows];
+
+  // Normalize requested workflows for consistent matching
+  const normalizedRequestedWorkflows = requestedWorkflows
+    ?.map(normalizeName)
+    .filter((name) => name.length > 0);
 
   // Select workflows using manifest-driven rules
-  const selectedWorkflows = selectWorkflowsForMcp(allWorkflows, requestedWorkflows, ctx);
+  const selectedWorkflows = selectWorkflowsForMcp(allWorkflows, normalizedRequestedWorkflows, ctx);
+  const knownWorkflowIds = new Set(allWorkflows.map((workflow) => workflow.id));
+  const unknownRequestedWorkflows = (normalizedRequestedWorkflows ?? []).filter(
+    (workflowName) => !knownWorkflowIds.has(workflowName),
+  );
+  if (unknownRequestedWorkflows.length > 0) {
+    const uniqueUnknownRequestedWorkflows = [...new Set(unknownRequestedWorkflows)];
+    log(
+      'warning',
+      `[config] Ignoring unknown workflow(s): ${uniqueUnknownRequestedWorkflows.join(', ')}`,
+    );
+    emitConfigWarningMetric('unknown_workflow');
+  }
 
   const desiredToolNames = new Set<string>();
   const desiredWorkflows = new Set<string>();

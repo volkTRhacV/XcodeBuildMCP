@@ -17,6 +17,7 @@ export type ProjectConfig = RuntimeConfigFile & {
   sessionDefaultsProfiles?: Record<string, Partial<SessionDefaults>>;
   activeSessionDefaultsProfile?: string;
   enabledWorkflows?: string[];
+  customWorkflows?: Record<string, string[]>;
   debuggerBackend?: 'dap' | 'lldb-cli';
   [key: string]: unknown;
 };
@@ -153,6 +154,37 @@ function normalizeEnabledWorkflows(value: unknown): string[] {
   return [];
 }
 
+function normalizeCustomWorkflows(value: unknown): Record<string, string[]> {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+
+  const normalized: Record<string, string[]> = {};
+
+  for (const [workflowName, workflowTools] of Object.entries(value)) {
+    const normalizedWorkflowName = workflowName.trim().toLowerCase();
+    if (!normalizedWorkflowName) {
+      continue;
+    }
+    if (Array.isArray(workflowTools)) {
+      normalized[normalizedWorkflowName] = workflowTools
+        .filter((toolName): toolName is string => typeof toolName === 'string')
+        .map((toolName) => toolName.trim().toLowerCase())
+        .filter(Boolean);
+      continue;
+    }
+    if (typeof workflowTools === 'string') {
+      normalized[normalizedWorkflowName] = workflowTools
+        .split(',')
+        .map((toolName) => toolName.trim().toLowerCase())
+        .filter(Boolean);
+      continue;
+    }
+  }
+
+  return normalized;
+}
+
 function resolveRelativeTopLevelPaths(config: ProjectConfig, cwd: string): ProjectConfig {
   const resolved: ProjectConfig = { ...config };
   const pathKeys = ['axePath', 'iosTemplatePath', 'macosTemplatePath'] as const;
@@ -197,12 +229,14 @@ function normalizeDebuggerBackend(config: RuntimeConfigFile): ProjectConfig {
 }
 
 function normalizeConfigForPersistence(config: RuntimeConfigFile): ProjectConfig {
-  const base = normalizeDebuggerBackend(config);
-  if (config.enabledWorkflows === undefined) {
-    return base;
+  let base = normalizeDebuggerBackend(config);
+  if (config.enabledWorkflows !== undefined) {
+    base = { ...base, enabledWorkflows: normalizeEnabledWorkflows(config.enabledWorkflows) };
   }
-  const normalizedWorkflows = normalizeEnabledWorkflows(config.enabledWorkflows);
-  return { ...base, enabledWorkflows: normalizedWorkflows };
+  if (config.customWorkflows !== undefined) {
+    base = { ...base, customWorkflows: normalizeCustomWorkflows(config.customWorkflows) };
+  }
+  return base;
 }
 
 function toProjectConfig(config: RuntimeConfigFile): ProjectConfig {
@@ -257,6 +291,10 @@ export async function loadProjectConfig(
     if (parsed.enabledWorkflows !== undefined) {
       const normalizedWorkflows = normalizeEnabledWorkflows(parsed.enabledWorkflows);
       config = { ...config, enabledWorkflows: normalizedWorkflows };
+    }
+    if (parsed.customWorkflows !== undefined) {
+      const normalizedCustomWorkflows = normalizeCustomWorkflows(parsed.customWorkflows);
+      config = { ...config, customWorkflows: normalizedCustomWorkflows };
     }
 
     if (config.sessionDefaults) {

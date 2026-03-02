@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added support for `customWorkflows` in `.xcodebuildmcp/config.yaml`, so user-defined workflow names can be referenced from `enabledWorkflows` and mapped to explicit tool lists.
+
 ### Fixed
 
 - Fixed `swift_package_build`, `swift_package_test`, and `swift_package_clean` swallowing compiler diagnostics on failure by treating empty stderr as falsy, so stdout diagnostics are included in the error response ([#243](https://github.com/getsentry/XcodeBuildMCP/issues/243)).
@@ -308,5 +312,4 @@ Please note that the UI automation features are an early preview and currently i
 ## [v1.0.1] - 2025-04-02
 - Initial release of XcodeBuildMCP
 - Basic support for building iOS and macOS applications
-
 
