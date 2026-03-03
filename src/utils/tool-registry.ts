@@ -77,6 +77,10 @@ export function createCustomWorkflowsFromConfig(
   manifest: ResolvedManifest,
   customWorkflows: Record<string, string[]>,
 ): { workflows: WorkflowManifestEntry[]; warnings: string[] } {
+  if (Object.keys(customWorkflows).length === 0) {
+    return { workflows: [], warnings: [] };
+  }
+
   const workflows: WorkflowManifestEntry[] = [];
   const warnings: string[] = [];
   const toolIdByAlias = buildToolAliasMap(manifest);

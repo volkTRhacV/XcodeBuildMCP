@@ -135,23 +135,25 @@ function resolveRelativeSessionPaths(
   return resolved;
 }
 
-function normalizeEnabledWorkflows(value: unknown): string[] {
+function normalizeStringList(value: unknown): string[] {
   if (value == null) return [];
   if (Array.isArray(value)) {
-    const normalized = value
+    return value
       .filter((name): name is string => typeof name === 'string')
       .map((name) => name.trim().toLowerCase())
       .filter(Boolean);
-    return normalized;
   }
   if (typeof value === 'string') {
-    const normalized = value
+    return value
       .split(',')
       .map((name) => name.trim().toLowerCase())
       .filter(Boolean);
-    return normalized;
   }
   return [];
+}
+
+function normalizeEnabledWorkflows(value: unknown): string[] {
+  return normalizeStringList(value);
 }
 
 function normalizeCustomWorkflows(value: unknown): Record<string, string[]> {
@@ -166,19 +168,9 @@ function normalizeCustomWorkflows(value: unknown): Record<string, string[]> {
     if (!normalizedWorkflowName) {
       continue;
     }
-    if (Array.isArray(workflowTools)) {
-      normalized[normalizedWorkflowName] = workflowTools
-        .filter((toolName): toolName is string => typeof toolName === 'string')
-        .map((toolName) => toolName.trim().toLowerCase())
-        .filter(Boolean);
-      continue;
-    }
-    if (typeof workflowTools === 'string') {
-      normalized[normalizedWorkflowName] = workflowTools
-        .split(',')
-        .map((toolName) => toolName.trim().toLowerCase())
-        .filter(Boolean);
-      continue;
+    const tools = normalizeStringList(workflowTools);
+    if (tools.length > 0) {
+      normalized[normalizedWorkflowName] = tools;
     }
   }
 
@@ -286,16 +278,7 @@ export async function loadProjectConfig(
     const parsed = parseProjectConfig(rawText);
     const notices: string[] = [];
 
-    let config = normalizeDebuggerBackend(parsed);
-
-    if (parsed.enabledWorkflows !== undefined) {
-      const normalizedWorkflows = normalizeEnabledWorkflows(parsed.enabledWorkflows);
-      config = { ...config, enabledWorkflows: normalizedWorkflows };
-    }
-    if (parsed.customWorkflows !== undefined) {
-      const normalizedCustomWorkflows = normalizeCustomWorkflows(parsed.customWorkflows);
-      config = { ...config, customWorkflows: normalizedCustomWorkflows };
-    }
+    let config = normalizeConfigForPersistence(parsed);
 
     if (config.sessionDefaults) {
       const normalized = normalizeMutualExclusivity(config.sessionDefaults);
