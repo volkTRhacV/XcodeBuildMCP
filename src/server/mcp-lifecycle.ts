@@ -1,0 +1,432 @@
+import process from 'node:process';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { getDefaultDebuggerManager } from '../utils/debugger/index.ts';
+import { activeLogSessions } from '../utils/log_capture.ts';
+import { activeDeviceLogSessions } from '../utils/log-capture/device-log-sessions.ts';
+import { activeProcesses } from '../mcp/tools/swift-package/active-processes.ts';
+import { getDaemonActivitySnapshot } from '../daemon/activity-registry.ts';
+import { listActiveVideoCaptureSessionIds } from '../utils/video_capture.ts';
+import { getDefaultCommandExecutor } from '../utils/execution/index.ts';
+import type { CommandExecutor } from '../utils/execution/index.ts';
+import { getWatchedPath, isWatcherRunning } from '../utils/xcode-state-watcher.ts';
+
+export type McpStartupPhase =
+  | 'initializing'
+  | 'hydrating-sentry-config'
+  | 'initializing-sentry'
+  | 'creating-server'
+  | 'bootstrapping-server'
+  | 'starting-stdio-transport'
+  | 'running'
+  | 'deferred-initialization'
+  | 'shutting-down'
+  | 'stopped';
+
+export type McpShutdownReason =
+  | 'stdin-end'
+  | 'stdin-close'
+  | 'stdout-error'
+  | 'sigint'
+  | 'sigterm'
+  | 'startup-failure'
+  | 'uncaught-exception'
+  | 'unhandled-rejection';
+
+export type McpLifecycleAnomaly =
+  | 'peer-count-high'
+  | 'peer-age-high'
+  | 'high-rss'
+  | 'long-lived-high-rss';
+
+export interface McpPeerProcessSummary {
+  pid: number;
+  ageSeconds: number;
+  rssKb: number;
+}
+
+export interface McpLifecycleSnapshot {
+  pid: number;
+  phase: McpStartupPhase;
+  shutdownReason: McpShutdownReason | null;
+  uptimeMs: number;
+  rssBytes: number;
+  heapUsedBytes: number;
+  watcherRunning: boolean;
+  watchedPath: string | null;
+  activeOperationCount: number;
+  activeOperationByCategory: Record<string, number>;
+  debuggerSessionCount: number;
+  simulatorLogSessionCount: number;
+  deviceLogSessionCount: number;
+  videoCaptureSessionCount: number;
+  swiftPackageProcessCount: number;
+  matchingMcpProcessCount: number | null;
+  matchingMcpPeerSummary: McpPeerProcessSummary[];
+  anomalies: McpLifecycleAnomaly[];
+}
+
+interface PeerProcessSample {
+  count: number | null;
+  peers: McpPeerProcessSummary[];
+}
+
+interface LifecycleStdinLike {
+  once(event: string, listener: (...args: unknown[]) => void): this;
+  removeListener(event: string, listener: (...args: unknown[]) => void): this;
+}
+
+interface LifecycleStdoutLike {
+  once(event: string, listener: (...args: unknown[]) => void): this;
+  removeListener(event: string, listener: (...args: unknown[]) => void): this;
+}
+
+interface LifecycleProcessLike {
+  stdin: LifecycleStdinLike;
+  stdout?: LifecycleStdoutLike;
+  once(event: string, listener: (...args: unknown[]) => void): this;
+  removeListener(event: string, listener: (...args: unknown[]) => void): this;
+}
+
+interface McpLifecycleState {
+  startedAtMs: number;
+  phase: McpStartupPhase;
+  shutdownReason: McpShutdownReason | null;
+  shutdownPromise: Promise<void> | null;
+  shutdownRequested: boolean;
+  server: McpServer | null;
+}
+
+export interface McpLifecycleCoordinator {
+  attachProcessHandlers(): void;
+  detachProcessHandlers(): void;
+  markPhase(phase: McpStartupPhase): void;
+  registerServer(server: McpServer): void;
+  isShutdownRequested(): boolean;
+  getSnapshot(): Promise<McpLifecycleSnapshot>;
+  shutdown(reason: McpShutdownReason, error?: unknown): Promise<void>;
+}
+
+export interface McpLifecycleCoordinatorOptions {
+  commandExecutor?: CommandExecutor;
+  processRef?: LifecycleProcessLike;
+  onShutdown: (context: {
+    reason: McpShutdownReason;
+    error?: unknown;
+    snapshot: McpLifecycleSnapshot;
+    server: McpServer | null;
+  }) => Promise<void>;
+}
+
+const HIGH_RSS_BYTES = 512 * 1024 * 1024;
+const LONG_LIVED_HIGH_RSS_BYTES = 256 * 1024 * 1024;
+const LONG_LIVED_UPTIME_MS = 5 * 60 * 1000;
+const PEER_AGE_HIGH_SECONDS = 120;
+const PEER_COUNT_HIGH_THRESHOLD = 2;
+
+function parseElapsedSeconds(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const daySplit = trimmed.split('-');
+  const timePart = daySplit.length === 2 ? daySplit[1] : daySplit[0];
+  const dayCount = daySplit.length === 2 ? Number(daySplit[0]) : 0;
+  const parts = timePart.split(':').map((part) => Number(part));
+
+  if (!Number.isFinite(dayCount) || parts.some((part) => !Number.isFinite(part))) {
+    return null;
+  }
+
+  if (parts.length === 1) {
+    return dayCount * 86400 + parts[0];
+  }
+  if (parts.length === 2) {
+    return dayCount * 86400 + parts[0] * 60 + parts[1];
+  }
+  if (parts.length === 3) {
+    return dayCount * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  return null;
+}
+
+export function classifyMcpLifecycleAnomalies(
+  snapshot: Pick<
+    McpLifecycleSnapshot,
+    'uptimeMs' | 'rssBytes' | 'matchingMcpProcessCount' | 'matchingMcpPeerSummary'
+  >,
+): McpLifecycleAnomaly[] {
+  const anomalies = new Set<McpLifecycleAnomaly>();
+  const peerCount = Math.max(0, (snapshot.matchingMcpProcessCount ?? 0) - 1);
+
+  if (peerCount >= PEER_COUNT_HIGH_THRESHOLD) {
+    anomalies.add('peer-count-high');
+  }
+  if (snapshot.matchingMcpPeerSummary.some((peer) => peer.ageSeconds >= PEER_AGE_HIGH_SECONDS)) {
+    anomalies.add('peer-age-high');
+  }
+  if (snapshot.rssBytes >= HIGH_RSS_BYTES) {
+    anomalies.add('high-rss');
+  }
+  if (snapshot.uptimeMs >= LONG_LIVED_UPTIME_MS && snapshot.rssBytes >= LONG_LIVED_HIGH_RSS_BYTES) {
+    anomalies.add('long-lived-high-rss');
+  }
+
+  return Array.from(anomalies.values()).sort();
+}
+
+function isLikelyMcpProcessCommand(command: string): boolean {
+  const normalized = command.toLowerCase();
+  const hasMcpArg = /(^|\s)mcp(\s|$)/.test(normalized);
+  if (!hasMcpArg) {
+    return false;
+  }
+
+  if (/(^|\s)daemon(\s|$)/.test(normalized)) {
+    return false;
+  }
+
+  return (
+    normalized.includes('xcodebuildmcp') ||
+    normalized.includes('build/cli.js') ||
+    normalized.includes('/cli.js')
+  );
+}
+
+function isBrokenPipeLikeError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const code = 'code' in error ? String((error as Error & { code?: unknown }).code ?? '') : '';
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+}
+
+async function sampleMcpPeerProcesses(
+  commandExecutor: CommandExecutor,
+  currentPid: number,
+): Promise<PeerProcessSample> {
+  try {
+    const result = await commandExecutor(
+      ['ps', '-axo', 'pid=,etime=,rss=,command='],
+      'Sample MCP lifecycle peer processes',
+      false,
+    );
+    if (!result.success) {
+      return { count: null, peers: [] };
+    }
+
+    const matched = result.output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(\d+)\s+(\S+)\s+(\d+)\s+(.+)$/);
+        if (!match) {
+          return null;
+        }
+        const [, pidRaw, elapsedRaw, rssRaw, command] = match;
+        const ageSeconds = parseElapsedSeconds(elapsedRaw);
+        return {
+          pid: Number(pidRaw),
+          ageSeconds,
+          rssKb: Number(rssRaw),
+          command,
+        };
+      })
+      .filter(
+        (entry): entry is { pid: number; ageSeconds: number; rssKb: number; command: string } => {
+          return (
+            entry !== null &&
+            Number.isFinite(entry.pid) &&
+            Number.isFinite(entry.ageSeconds) &&
+            Number.isFinite(entry.rssKb) &&
+            isLikelyMcpProcessCommand(entry.command)
+          );
+        },
+      );
+
+    const peers = matched
+      .filter((entry) => entry.pid !== currentPid)
+      .map(({ pid, ageSeconds, rssKb }) => ({ pid, ageSeconds, rssKb }))
+      .sort((left, right) => {
+        if (right.ageSeconds !== left.ageSeconds) {
+          return right.ageSeconds - left.ageSeconds;
+        }
+        return right.rssKb - left.rssKb;
+      })
+      .slice(0, 5);
+
+    return {
+      count: matched.length,
+      peers,
+    };
+  } catch {
+    return { count: null, peers: [] };
+  }
+}
+
+export async function buildMcpLifecycleSnapshot(options: {
+  phase: McpStartupPhase;
+  shutdownReason: McpShutdownReason | null;
+  startedAtMs: number;
+  commandExecutor?: CommandExecutor;
+}): Promise<McpLifecycleSnapshot> {
+  const memoryUsage = process.memoryUsage();
+  const activitySnapshot = getDaemonActivitySnapshot();
+  const peerSample = await sampleMcpPeerProcesses(
+    options.commandExecutor ?? getDefaultCommandExecutor(),
+    process.pid,
+  );
+
+  const snapshotWithoutAnomalies = {
+    pid: process.pid,
+    phase: options.phase,
+    shutdownReason: options.shutdownReason,
+    uptimeMs: Math.max(0, Date.now() - options.startedAtMs),
+    rssBytes: memoryUsage.rss,
+    heapUsedBytes: memoryUsage.heapUsed,
+    watcherRunning: isWatcherRunning(),
+    watchedPath: getWatchedPath(),
+    activeOperationCount: activitySnapshot.activeOperationCount,
+    activeOperationByCategory: activitySnapshot.byCategory,
+    debuggerSessionCount: getDefaultDebuggerManager().listSessions().length,
+    simulatorLogSessionCount: activeLogSessions.size,
+    deviceLogSessionCount: activeDeviceLogSessions.size,
+    videoCaptureSessionCount: listActiveVideoCaptureSessionIds().length,
+    swiftPackageProcessCount: activeProcesses.size,
+    matchingMcpProcessCount: peerSample.count,
+    matchingMcpPeerSummary: peerSample.peers,
+  };
+
+  return {
+    ...snapshotWithoutAnomalies,
+    anomalies: classifyMcpLifecycleAnomalies(snapshotWithoutAnomalies),
+  };
+}
+
+export function createMcpLifecycleCoordinator(
+  options: McpLifecycleCoordinatorOptions,
+): McpLifecycleCoordinator {
+  const processRef = options.processRef ?? (process as LifecycleProcessLike);
+  const state: McpLifecycleState = {
+    startedAtMs: Date.now(),
+    phase: 'initializing',
+    shutdownReason: null,
+    shutdownPromise: null,
+    shutdownRequested: false,
+    server: null,
+  };
+
+  const handleSigterm = (): void => {
+    void coordinator.shutdown('sigterm');
+  };
+  const handleSigint = (): void => {
+    void coordinator.shutdown('sigint');
+  };
+  const handleStdinEnd = (): void => {
+    void coordinator.shutdown('stdin-end');
+  };
+  const handleStdinClose = (): void => {
+    void coordinator.shutdown('stdin-close');
+  };
+  const handleStdoutError = (error: unknown): void => {
+    if (!isBrokenPipeLikeError(error)) {
+      return;
+    }
+    void coordinator.shutdown('stdout-error', error);
+  };
+  const handleUncaughtException = (error: unknown): void => {
+    void coordinator.shutdown('uncaught-exception', error);
+  };
+  const handleUnhandledRejection = (reason: unknown): void => {
+    void coordinator.shutdown('unhandled-rejection', reason);
+  };
+
+  let handlersAttached = false;
+
+  const coordinator: McpLifecycleCoordinator = {
+    attachProcessHandlers(): void {
+      if (handlersAttached) {
+        return;
+      }
+      handlersAttached = true;
+
+      processRef.once('SIGTERM', handleSigterm);
+      processRef.once('SIGINT', handleSigint);
+      processRef.stdin.once('end', handleStdinEnd);
+      processRef.stdin.once('close', handleStdinClose);
+      processRef.stdout?.once('error', handleStdoutError);
+      processRef.once('uncaughtException', handleUncaughtException);
+      processRef.once('unhandledRejection', handleUnhandledRejection);
+    },
+
+    detachProcessHandlers(): void {
+      if (!handlersAttached) {
+        return;
+      }
+      handlersAttached = false;
+
+      processRef.removeListener('SIGTERM', handleSigterm);
+      processRef.removeListener('SIGINT', handleSigint);
+      processRef.stdin.removeListener('end', handleStdinEnd);
+      processRef.stdin.removeListener('close', handleStdinClose);
+      processRef.stdout?.removeListener('error', handleStdoutError);
+      processRef.removeListener('uncaughtException', handleUncaughtException);
+      processRef.removeListener('unhandledRejection', handleUnhandledRejection);
+    },
+
+    markPhase(phase: McpStartupPhase): void {
+      state.phase = phase;
+    },
+
+    registerServer(server: McpServer): void {
+      state.server = server;
+    },
+
+    isShutdownRequested(): boolean {
+      return state.shutdownRequested;
+    },
+
+    async getSnapshot(): Promise<McpLifecycleSnapshot> {
+      return buildMcpLifecycleSnapshot({
+        phase: state.phase,
+        shutdownReason: state.shutdownReason,
+        startedAtMs: state.startedAtMs,
+        commandExecutor: options.commandExecutor,
+      });
+    },
+
+    async shutdown(reason: McpShutdownReason, error?: unknown): Promise<void> {
+      if (state.shutdownPromise) {
+        return state.shutdownPromise;
+      }
+
+      state.shutdownRequested = true;
+      state.shutdownReason = reason;
+      const phaseAtShutdown = state.phase;
+      state.phase = 'shutting-down';
+
+      state.shutdownPromise = (async (): Promise<void> => {
+        const snapshot = await buildMcpLifecycleSnapshot({
+          phase: phaseAtShutdown,
+          shutdownReason: state.shutdownReason,
+          startedAtMs: state.startedAtMs,
+          commandExecutor: options.commandExecutor,
+        });
+        await options.onShutdown({
+          reason,
+          error,
+          snapshot,
+          server: state.server,
+        });
+        state.phase = 'stopped';
+      })();
+
+      return state.shutdownPromise;
+    },
+  };
+
+  return coordinator;
+}

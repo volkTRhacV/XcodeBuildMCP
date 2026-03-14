@@ -12,6 +12,10 @@
 
 - Clarified configuration layering: `session_set_defaults` overrides `config.yaml`, which overrides env-based bootstrap values. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) ([#268](https://github.com/getsentry/XcodeBuildMCP/pull/268) by [@detailobsessed](https://github.com/detailobsessed)).
 
+### Fixed
+
+- Fixed orphaned MCP server processes by attaching shutdown handlers before async startup, explicitly stopping the Xcode watcher during teardown, and adding lifecycle diagnostics for memory and peer-process anomalies ([#273](https://github.com/getsentry/XcodeBuildMCP/issues/273)).
+
 ## [2.2.1]
 
 - Fix AXe bundling issue.
@@ -406,4 +410,3 @@ Please note that the UI automation features are an early preview and currently i
 ## [v1.0.1] - 2025-04-02
 - Initial release of XcodeBuildMCP
 - Basic support for building iOS and macOS applications
-

@@ -24,7 +24,7 @@ export interface BootstrapOptions {
 }
 
 export interface BootstrapResult {
-  runDeferredInitialization: () => Promise<void>;
+  runDeferredInitialization: (options?: { isShutdownRequested?: () => boolean }) => Promise<void>;
 }
 
 export async function bootstrapServer(
@@ -104,8 +104,9 @@ export async function bootstrapServer(
   profiler.mark('registerResources', stageStartMs);
 
   return {
-    runDeferredInitialization: async (): Promise<void> => {
+    runDeferredInitialization: async (options = {}): Promise<void> => {
       const deferredProfiler = createStartupProfiler('bootstrap-deferred');
+      const isShutdownRequested = options.isShutdownRequested;
 
       if (!xcodeDetection.runningUnderXcode) {
         return;
@@ -114,6 +115,10 @@ export async function bootstrapServer(
       log('info', `[xcode] Running under Xcode agent environment`);
 
       const { projectPath, workspacePath } = sessionStore.getAll();
+
+      if (isShutdownRequested?.()) {
+        return;
+      }
 
       let deferredStageStartMs = getStartupProfileNowMs();
       const xcodeState = await readXcodeIdeState({
@@ -124,6 +129,10 @@ export async function bootstrapServer(
         workspacePath,
       });
       deferredProfiler.mark('readXcodeIdeState', deferredStageStartMs);
+
+      if (isShutdownRequested?.()) {
+        return;
+      }
 
       if (xcodeState.error) {
         log('debug', `[xcode] Could not read Xcode IDE state: ${xcodeState.error}`);
@@ -162,6 +171,9 @@ export async function bootstrapServer(
       }
 
       if (!result.runtime.config.disableXcodeAutoSync) {
+        if (isShutdownRequested?.()) {
+          return;
+        }
         deferredStageStartMs = getStartupProfileNowMs();
         const watcherStarted = await startXcodeStateWatcher({
           executor,

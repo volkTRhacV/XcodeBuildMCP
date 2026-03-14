@@ -16,6 +16,7 @@ export type SentryToolRuntime = 'cli' | 'daemon' | 'mcp';
 export type SentryToolTransport = 'direct' | 'daemon' | 'xcode-ide-daemon';
 export type SentryToolInvocationOutcome = 'completed' | 'infra_error';
 export type SentryDaemonLifecycleEvent = 'start' | 'shutdown' | 'crash';
+export type SentryMcpLifecycleEvent = 'start' | 'shutdown' | 'crash';
 
 export interface SentryRuntimeContext {
   mode: SentryRuntimeMode;
@@ -380,6 +381,7 @@ interface InternalErrorMetric {
 }
 
 type DaemonGaugeMetricName = 'inflight_requests' | 'active_sessions' | 'idle_timeout_ms';
+
 function sanitizeTagValue(value: string): string {
   const trimmed = value.trim().toLowerCase();
   if (!trimmed) {
@@ -478,6 +480,80 @@ export function recordDaemonGaugeMetric(metricName: DaemonGaugeMetricName, value
     Sentry.metrics.gauge(`xcodebuildmcp.daemon.${metricName}`, normalizedValue, {
       attributes: {
         runtime: 'daemon',
+      },
+    });
+  } catch {
+    // Metrics are best effort and must never affect runtime behavior.
+  }
+}
+
+interface McpLifecycleMetric {
+  event: SentryMcpLifecycleEvent;
+  phase: string;
+  reason?: string;
+  uptimeMs: number;
+  rssBytes: number;
+  matchingMcpProcessCount?: number | null;
+  activeOperationCount: number;
+  watcherRunning: boolean;
+}
+
+interface McpLifecycleAnomalyMetric {
+  kind: string;
+  phase: string;
+  reason?: string;
+}
+
+export function recordMcpLifecycleMetric(metric: McpLifecycleMetric): void {
+  if (!shouldEmitMetrics()) {
+    return;
+  }
+
+  const attributes = {
+    runtime: 'mcp',
+    event: sanitizeTagValue(metric.event),
+    phase: sanitizeTagValue(metric.phase),
+    ...(metric.reason ? { reason: sanitizeTagValue(metric.reason) } : {}),
+    watcher_running: String(metric.watcherRunning),
+    has_active_operations: String(metric.activeOperationCount > 0),
+  };
+
+  try {
+    Sentry.metrics.count('xcodebuildmcp.mcp.lifecycle.count', 1, { attributes });
+    Sentry.metrics.distribution(
+      'xcodebuildmcp.mcp.lifecycle.uptime_ms',
+      Math.max(0, metric.uptimeMs),
+      { attributes },
+    );
+    Sentry.metrics.distribution(
+      'xcodebuildmcp.mcp.lifecycle.rss_bytes',
+      Math.max(0, metric.rssBytes),
+      { attributes },
+    );
+    if (metric.matchingMcpProcessCount != null) {
+      Sentry.metrics.distribution(
+        'xcodebuildmcp.mcp.lifecycle.process_count',
+        Math.max(0, metric.matchingMcpProcessCount),
+        { attributes },
+      );
+    }
+  } catch {
+    // Metrics are best effort and must never affect runtime behavior.
+  }
+}
+
+export function recordMcpLifecycleAnomalyMetric(metric: McpLifecycleAnomalyMetric): void {
+  if (!shouldEmitMetrics()) {
+    return;
+  }
+
+  try {
+    Sentry.metrics.count('xcodebuildmcp.mcp.lifecycle.anomaly.count', 1, {
+      attributes: {
+        runtime: 'mcp',
+        kind: sanitizeTagValue(metric.kind),
+        phase: sanitizeTagValue(metric.phase),
+        ...(metric.reason ? { reason: sanitizeTagValue(metric.reason) } : {}),
       },
     });
   } catch {
