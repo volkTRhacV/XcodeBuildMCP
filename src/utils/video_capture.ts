@@ -113,7 +113,8 @@ function ensureSignalHandlersAttached(): void {
   signalHandlersAttached = true;
 
   const stopAll = (): void => {
-    for (const simulatorUuid of sessions.keys()) {
+    const simulatorIds = Array.from(sessions.keys());
+    for (const simulatorUuid of simulatorIds) {
       void stopSession(simulatorUuid, { timeoutMs: 250 });
     }
   };

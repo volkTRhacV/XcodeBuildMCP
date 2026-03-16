@@ -64,7 +64,7 @@ async function terminateProcess(
     return { error: error instanceof Error ? error.message : String(error) };
   }
 
-  const alreadyExited = info.process.exitCode != null || info.process.killed === true;
+  const alreadyExited = info.process.exitCode != null;
   if (alreadyExited) {
     return {};
   }
