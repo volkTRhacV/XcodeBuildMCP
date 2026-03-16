@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { __closeServerForFastExitForTests } from '../start-mcp-server.ts';
+import { closeServerWithTimeout } from '../mcp-shutdown.ts';
 
 describe('fast-exit server close', () => {
   afterEach(() => {
@@ -8,12 +8,12 @@ describe('fast-exit server close', () => {
   });
 
   it('returns skipped when server is not available', async () => {
-    await expect(__closeServerForFastExitForTests(undefined)).resolves.toBe('skipped');
+    await expect(closeServerWithTimeout(undefined, 50)).resolves.toBe('skipped');
   });
 
   it('returns closed when server close resolves quickly', async () => {
     const close = vi.fn(async () => undefined);
-    await expect(__closeServerForFastExitForTests({ close }, 50)).resolves.toBe('closed');
+    await expect(closeServerWithTimeout({ close }, 50)).resolves.toBe('closed');
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -22,7 +22,7 @@ describe('fast-exit server close', () => {
       throw new Error('close failed');
     });
 
-    await expect(__closeServerForFastExitForTests({ close }, 50)).resolves.toBe('rejected');
+    await expect(closeServerWithTimeout({ close }, 50)).resolves.toBe('rejected');
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -30,7 +30,7 @@ describe('fast-exit server close', () => {
     vi.useFakeTimers();
     const close = vi.fn(() => new Promise<void>(() => undefined));
 
-    const outcomePromise = __closeServerForFastExitForTests({ close }, 50);
+    const outcomePromise = closeServerWithTimeout({ close }, 50);
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(outcomePromise).resolves.toBe('timed_out');

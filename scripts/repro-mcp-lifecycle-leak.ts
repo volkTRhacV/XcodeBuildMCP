@@ -5,10 +5,12 @@ interface CliOptions {
   iterations: number;
   closeDelayMs: number;
   settleMs: number;
+  shutdownMode: 'graceful-stdin' | 'parent-hard-exit';
 }
 
 interface PeerProcess {
   pid: number;
+  ppid: number;
   ageSeconds: number;
   rssKb: number;
   command: string;
@@ -19,6 +21,7 @@ function parseArgs(argv: string[]): CliOptions {
     iterations: 20,
     closeDelayMs: 0,
     settleMs: 2000,
+    shutdownMode: 'parent-hard-exit',
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -33,6 +36,12 @@ function parseArgs(argv: string[]): CliOptions {
       index += 1;
     } else if (arg === '--settle-ms' && value) {
       options.settleMs = Number(value);
+      index += 1;
+    } else if (arg === '--shutdown-mode' && value) {
+      if (value !== 'graceful-stdin' && value !== 'parent-hard-exit') {
+        throw new Error('--shutdown-mode must be graceful-stdin or parent-hard-exit');
+      }
+      options.shutdownMode = value;
       index += 1;
     }
   }
@@ -95,7 +104,7 @@ function parseElapsedSeconds(value: string): number | null {
 
 async function sampleMcpProcesses(): Promise<PeerProcess[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn('ps', ['-axo', 'pid=,etime=,rss=,command='], {
+    const child = spawn('ps', ['-axo', 'pid=,ppid=,etime=,rss=,command='], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -119,16 +128,17 @@ async function sampleMcpProcesses(): Promise<PeerProcess[]> {
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line) => {
-          const match = line.match(/^(\d+)\s+(\S+)\s+(\d+)\s+(.+)$/);
+          const match = line.match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.+)$/);
           if (!match) {
             return null;
           }
-          const ageSeconds = parseElapsedSeconds(match[2]);
+          const ageSeconds = parseElapsedSeconds(match[3]);
           return {
             pid: Number(match[1]),
+            ppid: Number(match[2]),
             ageSeconds,
-            rssKb: Number(match[3]),
-            command: match[4],
+            rssKb: Number(match[4]),
+            command: match[5],
           };
         })
         .filter((entry): entry is PeerProcess => {
@@ -146,21 +156,33 @@ async function sampleMcpProcesses(): Promise<PeerProcess[]> {
   });
 }
 
-async function runIteration(closeDelayMs: number): Promise<boolean> {
+interface IterationResult {
+  helperExited: boolean;
+  childExited: boolean;
+  childPid: number | null;
+}
+
+async function runGracefulStdinIteration(closeDelayMs: number): Promise<IterationResult> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['build/cli.js', 'mcp'], {
       cwd: process.cwd(),
       stdio: ['pipe', 'ignore', 'ignore'],
     });
 
-    let exited = false;
+    let settled = false;
+    const finish = (result: IterationResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+
     child.once('close', () => {
-      exited = true;
-      resolve(true);
+      finish({ helperExited: true, childExited: true, childPid: child.pid ?? null });
     });
     child.once('error', () => {
-      exited = true;
-      resolve(false);
+      finish({ helperExited: false, childExited: false, childPid: child.pid ?? null });
     });
 
     setTimeout(() => {
@@ -169,13 +191,73 @@ async function runIteration(closeDelayMs: number): Promise<boolean> {
 
     setTimeout(
       () => {
-        if (!exited) {
-          resolve(false);
-        }
+        finish({ helperExited: false, childExited: false, childPid: child.pid ?? null });
       },
       Math.max(1000, closeDelayMs + 1000),
     );
   });
+}
+
+async function runParentHardExitIteration(closeDelayMs: number): Promise<IterationResult> {
+  return new Promise((resolve) => {
+    const helper = spawn(
+      process.execPath,
+      [
+        'scripts/repro-mcp-parent-exit-helper.mjs',
+        process.execPath,
+        'build/cli.js',
+        process.cwd(),
+        String(closeDelayMs),
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    let childPid: number | null = null;
+    let settled = false;
+    let stdout = '';
+
+    const finish = (result: IterationResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+
+    helper.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      const candidate = stdout.split('\n')[0]?.trim();
+      if (candidate && /^\d+$/.test(candidate)) {
+        childPid = Number(candidate);
+      }
+    });
+
+    helper.once('error', () => {
+      finish({ helperExited: false, childExited: false, childPid });
+    });
+
+    helper.once('close', (code) => {
+      finish({ helperExited: code === 0, childExited: false, childPid });
+    });
+
+    setTimeout(
+      () => {
+        finish({ helperExited: false, childExited: false, childPid });
+      },
+      Math.max(1500, closeDelayMs + 1500),
+    );
+  });
+}
+
+async function runIteration(options: CliOptions): Promise<IterationResult> {
+  if (options.shutdownMode === 'parent-hard-exit') {
+    return runParentHardExitIteration(options.closeDelayMs);
+  }
+
+  return runGracefulStdinIteration(options.closeDelayMs);
 }
 
 async function main(): Promise<void> {
@@ -183,11 +265,20 @@ async function main(): Promise<void> {
   const before = await sampleMcpProcesses();
   const baselinePids = new Set(before.map((entry) => entry.pid));
 
-  let exitedCount = 0;
+  let helperExitedCount = 0;
+  let childExitedCount = 0;
+  const spawnedChildPids = new Set<number>();
+
   for (let index = 0; index < options.iterations; index += 1) {
-    const exited = await runIteration(options.closeDelayMs);
-    if (exited) {
-      exitedCount += 1;
+    const result = await runIteration(options);
+    if (result.helperExited) {
+      helperExitedCount += 1;
+    }
+    if (result.childExited) {
+      childExitedCount += 1;
+    }
+    if (result.childPid !== null) {
+      spawnedChildPids.add(result.childPid);
     }
   }
 
@@ -195,28 +286,43 @@ async function main(): Promise<void> {
 
   const after = await sampleMcpProcesses();
   const lingering = after.filter((entry) => !baselinePids.has(entry.pid));
+  const lingeringSpawned = lingering.filter((entry) => spawnedChildPids.has(entry.pid));
 
   console.log(
     JSON.stringify(
       {
+        shutdownMode: options.shutdownMode,
         iterations: options.iterations,
-        exitedCount,
+        helperExitedCount,
+        childExitedCount,
+        spawnedChildPidCount: spawnedChildPids.size,
         baselineProcessCount: before.length,
         finalProcessCount: after.length,
         lingeringProcessCount: lingering.length,
-        lingering: lingering.map(({ pid, ageSeconds, rssKb, command }) => ({
+        lingeringSpawnedProcessCount: lingeringSpawned.length,
+        lingeringSpawned: lingeringSpawned.map(({ pid, ppid, ageSeconds, rssKb, command }) => ({
           pid,
+          ppid,
           ageSeconds,
           rssKb,
           command,
         })),
+        lingering: lingering.map(({ pid, ppid, ageSeconds, rssKb, command }) => ({
+          pid,
+          ppid,
+          ageSeconds,
+          rssKb,
+          command,
+        })),
+        orphanedLingeringCount: lingering.filter((entry) => entry.ppid === 1).length,
+        maxLingeringRssKb: lingering.reduce((max, entry) => Math.max(max, entry.rssKb), 0),
       },
       null,
       2,
     ),
   );
 
-  process.exit(lingering.length === 0 ? 0 : 1);
+  process.exit(lingeringSpawned.length === 0 ? 0 : 1);
 }
 
 void main().catch((error) => {

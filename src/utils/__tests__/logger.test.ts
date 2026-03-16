@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { __mapLogLevelToSentryForTests, __shouldCaptureToSentryForTests } from '../logger.ts';
+import { resetShutdownStateForTests, sealSentryCapture } from '../shutdown-state.ts';
 
 describe('logger sentry capture policy', () => {
+  afterEach(() => {
+    resetShutdownStateForTests();
+  });
   it('does not capture by default', () => {
     expect(__shouldCaptureToSentryForTests()).toBe(false);
   });
@@ -12,6 +16,11 @@ describe('logger sentry capture policy', () => {
 
   it('captures only when explicitly enabled', () => {
     expect(__shouldCaptureToSentryForTests({ sentry: true })).toBe(true);
+  });
+
+  it('does not capture after sentry sealing', () => {
+    sealSentryCapture();
+    expect(__shouldCaptureToSentryForTests({ sentry: true })).toBe(false);
   });
 
   it('maps internal levels to Sentry log levels', () => {

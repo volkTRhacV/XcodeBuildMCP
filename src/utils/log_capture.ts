@@ -235,6 +235,83 @@ export async function startLogCapture(
   }
 }
 
+interface StopLogSessionOptions {
+  timeoutMs?: number;
+  readLogContent?: boolean;
+  fileSystem: FileSystemExecutor;
+}
+
+interface StopLogSessionResult {
+  logContent: string;
+  error?: string;
+}
+
+interface MinimalWritable {
+  end: () => void;
+  destroy?: (error?: Error) => void;
+}
+
+function createTimeoutPromise(timeoutMs: number): Promise<'timed_out'> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timed_out'), timeoutMs);
+    timer.unref?.();
+  });
+}
+
+async function closeLogStreamWithTimeout(
+  stream: MinimalWritable,
+  timeoutMs: number,
+): Promise<void> {
+  stream.end();
+  const closePromise = finished(stream as Writable)
+    .then(() => 'closed' as const)
+    .catch(() => 'closed' as const);
+  const outcome = await Promise.race([closePromise, createTimeoutPromise(timeoutMs)]);
+  if (outcome === 'timed_out') {
+    stream.destroy?.();
+  }
+}
+
+async function stopLogSession(
+  logSessionId: string,
+  options: StopLogSessionOptions,
+): Promise<StopLogSessionResult> {
+  const session = activeLogSessions.get(logSessionId);
+  if (!session) {
+    return { logContent: '', error: `Log capture session not found: ${logSessionId}` };
+  }
+
+  activeLogSessions.delete(logSessionId);
+
+  try {
+    for (const process of session.processes) {
+      if (!process.killed && process.exitCode === null) {
+        process.kill('SIGTERM');
+      }
+    }
+
+    await closeLogStreamWithTimeout(
+      session.logStream as MinimalWritable,
+      options.timeoutMs ?? 1000,
+    );
+
+    if (options.readLogContent) {
+      if (!options.fileSystem.existsSync(session.logFilePath)) {
+        return { logContent: '', error: `Log file not found: ${session.logFilePath}` };
+      }
+      const fileContent = await options.fileSystem.readFile(session.logFilePath, 'utf-8');
+      return { logContent: fileContent };
+    }
+
+    return { logContent: '' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { logContent: '', error: message };
+  } finally {
+    session.releaseActivity?.();
+  }
+}
+
 /**
  * Stop a log capture session and retrieve the log content.
  */
@@ -242,39 +319,44 @@ export async function stopLogCapture(
   logSessionId: string,
   fileSystem: FileSystemExecutor = getDefaultFileSystemExecutor(),
 ): Promise<{ logContent: string; error?: string }> {
-  const session = activeLogSessions.get(logSessionId);
-  if (!session) {
-    log('warn', `Log session not found: ${logSessionId}`);
-    return { logContent: '', error: `Log capture session not found: ${logSessionId}` };
+  const result = await stopLogSession(logSessionId, {
+    fileSystem,
+    readLogContent: true,
+    timeoutMs: 1000,
+  });
+
+  if (result.error) {
+    log('error', `Failed to stop log capture session ${logSessionId}: ${result.error}`);
+    return { logContent: '', error: result.error };
   }
 
-  try {
-    log('info', `Attempting to stop log capture session: ${logSessionId}`);
-    const { logFilePath, logStream } = session;
-    for (const process of session.processes) {
-      if (!process.killed && process.exitCode === null) {
-        process.kill('SIGTERM');
-      }
+  log('info', `Log capture session ${logSessionId} stopped.`);
+  return result;
+}
+
+export async function stopAllLogCaptures(timeoutMs = 1000): Promise<{
+  stoppedSessionCount: number;
+  errorCount: number;
+  errors: string[];
+}> {
+  const sessionIds = Array.from(activeLogSessions.keys());
+  const errors: string[] = [];
+  for (const sessionId of sessionIds) {
+    const result = await stopLogSession(sessionId, {
+      fileSystem: getDefaultFileSystemExecutor(),
+      readLogContent: false,
+      timeoutMs,
+    });
+    if (result.error) {
+      errors.push(`${sessionId}: ${result.error}`);
     }
-    logStream.end();
-    await finished(logStream);
-    session.releaseActivity?.();
-    activeLogSessions.delete(logSessionId);
-    log(
-      'info',
-      `Log capture session ${logSessionId} stopped. Log file retained at: ${logFilePath}`,
-    );
-    if (!fileSystem.existsSync(logFilePath)) {
-      throw new Error(`Log file not found: ${logFilePath}`);
-    }
-    const fileContent = await fileSystem.readFile(logFilePath, 'utf-8');
-    log('info', `Successfully read log content from ${logFilePath}`);
-    return { logContent: fileContent };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log('error', `Failed to stop log capture session ${logSessionId}: ${message}`);
-    return { logContent: '', error: message };
   }
+
+  return {
+    stoppedSessionCount: sessionIds.length - errors.length,
+    errorCount: errors.length,
+    errors,
+  };
 }
 
 /**

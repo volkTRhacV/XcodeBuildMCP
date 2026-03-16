@@ -6,6 +6,7 @@
  */
 import * as Sentry from '@sentry/node';
 import { version } from '../version.ts';
+import { isSentryCaptureSealed } from './shutdown-state.ts';
 const USER_HOME_PATH_PATTERN = /\/Users\/[^/\s]+/g;
 const XCODE_VERSION_PATTERN = /^Xcode\s+(.+)$/m;
 const XCODE_BUILD_PATTERN = /^Build version\s+(.+)$/m;
@@ -232,7 +233,7 @@ function applyRuntimeContext(context: SentryRuntimeContext): void {
 export function setSentryRuntimeContext(context: SentryRuntimeContext): void {
   pendingRuntimeContext = context;
 
-  if (!initialized || isSentryDisabled() || isTestEnv()) {
+  if (!initialized || isSentryDisabled() || isTestEnv() || isSentryCaptureSealed()) {
     return;
   }
 
@@ -339,7 +340,7 @@ export function initSentry(context?: Pick<SentryRuntimeContext, 'mode'>): void {
 }
 
 export function enrichSentryContext(): void {
-  if (!initialized || enriched || isSentryDisabled() || isTestEnv()) {
+  if (!initialized || enriched || isSentryDisabled() || isTestEnv() || isSentryCaptureSealed()) {
     return;
   }
 
@@ -363,6 +364,77 @@ export async function flushAndCloseSentry(timeoutMs = 2000): Promise<void> {
     await Sentry.close(timeoutMs);
   } catch {
     // Best effort during shutdown.
+  }
+}
+
+export type FlushSentryOutcome = 'skipped' | 'flushed' | 'timed_out' | 'failed';
+
+export interface McpShutdownSummaryEvent {
+  reason: string;
+  phase: string;
+  exitCode: number;
+  transportDisconnected: boolean;
+  triggerError?: string;
+  cleanupFailureCount: number;
+  shutdownDurationMs: number;
+  snapshot: Record<string, unknown>;
+  steps: Array<Record<string, unknown>>;
+}
+
+export async function flushSentry(timeoutMs = 2000): Promise<FlushSentryOutcome> {
+  if (!initialized || isSentryDisabled() || isTestEnv()) {
+    return 'skipped';
+  }
+
+  try {
+    const flushed = await Sentry.flush(timeoutMs);
+    return flushed ? 'flushed' : 'timed_out';
+  } catch {
+    return 'failed';
+  }
+}
+
+export function captureMcpShutdownSummary(summary: McpShutdownSummaryEvent): void {
+  if (!initialized || isSentryDisabled() || isTestEnv() || isSentryCaptureSealed()) {
+    return;
+  }
+
+  try {
+    const anomalies =
+      (summary.snapshot as { anomalies?: unknown }).anomalies &&
+      Array.isArray((summary.snapshot as { anomalies?: unknown }).anomalies)
+        ? (summary.snapshot as { anomalies: unknown[] }).anomalies.length
+        : 0;
+
+    const level =
+      summary.reason === 'startup-failure' ||
+      summary.reason === 'uncaught-exception' ||
+      summary.reason === 'unhandled-rejection'
+        ? 'error'
+        : summary.cleanupFailureCount > 0 || anomalies > 0
+          ? 'warning'
+          : 'info';
+
+    Sentry.captureEvent({
+      level,
+      message: 'mcp.shutdown.summary',
+      tags: {
+        runtime: 'mcp',
+        reason: sanitizeTagValue(summary.reason),
+        phase: sanitizeTagValue(summary.phase),
+      },
+      extra: {
+        exitCode: summary.exitCode,
+        transportDisconnected: summary.transportDisconnected,
+        triggerError: summary.triggerError,
+        cleanupFailureCount: summary.cleanupFailureCount,
+        shutdownDurationMs: summary.shutdownDurationMs,
+        snapshot: summary.snapshot,
+        steps: summary.steps,
+      },
+    });
+  } catch {
+    // Shutdown summary is best effort.
   }
 }
 
@@ -391,7 +463,7 @@ function sanitizeTagValue(value: string): string {
 }
 
 function shouldEmitMetrics(): boolean {
-  return initialized && !isSentryDisabled() && !isTestEnv();
+  return initialized && !isSentryDisabled() && !isTestEnv() && !isSentryCaptureSealed();
 }
 export function recordToolInvocationMetric(metric: ToolInvocationMetric): void {
   if (!shouldEmitMetrics()) {

@@ -1,53 +1,39 @@
 import * as z from 'zod';
 import { createTextResponse, createErrorResponse } from '../../../utils/responses/index.ts';
-import { getProcess, removeProcess, type ProcessInfo } from './active-processes.ts';
+import { getProcess, terminateTrackedProcess, type ProcessInfo } from './active-processes.ts';
 import type { ToolResponse } from '../../../types/common.ts';
 
-// Define schema as ZodObject
 const swiftPackageStopSchema = z.object({
   pid: z.number(),
 });
 
-// Use z.infer for type safety
 type SwiftPackageStopParams = z.infer<typeof swiftPackageStopSchema>;
 
-/**
- * Process manager interface for dependency injection
- */
 export interface ProcessManager {
   getProcess: (pid: number) => ProcessInfo | undefined;
-  removeProcess: (pid: number) => boolean;
+  terminateTrackedProcess: (
+    pid: number,
+    timeoutMs: number,
+  ) => Promise<{ status: 'not-found' | 'terminated'; startedAt?: Date; error?: string }>;
 }
 
-/**
- * Default process manager implementation
- */
 const defaultProcessManager: ProcessManager = {
   getProcess,
-  removeProcess,
+  terminateTrackedProcess,
 };
 
-/**
- * Get the default process manager instance
- */
 export function getDefaultProcessManager(): ProcessManager {
   return defaultProcessManager;
 }
 
-/**
- * Create a mock process manager for testing
- */
 export function createMockProcessManager(overrides?: Partial<ProcessManager>): ProcessManager {
   return {
     getProcess: () => undefined,
-    removeProcess: () => true,
+    terminateTrackedProcess: async () => ({ status: 'not-found' }),
     ...overrides,
   };
 }
 
-/**
- * Business logic for stopping a Swift Package executable
- */
 export async function swift_package_stopLogic(
   params: SwiftPackageStopParams,
   processManager: ProcessManager = getDefaultProcessManager(),
@@ -62,32 +48,25 @@ export async function swift_package_stopLogic(
   }
 
   try {
-    processInfo.process.kill('SIGTERM');
+    const result = await processManager.terminateTrackedProcess(params.pid, timeout);
+    if (result.status === 'not-found') {
+      return createTextResponse(
+        `⚠️ No running process found with PID ${params.pid}. Use swift_package_run to check active processes.`,
+        true,
+      );
+    }
 
-    // Give it time to terminate gracefully (configurable for testing)
-    await new Promise((resolve) => {
-      let terminated = false;
+    if (result.error) {
+      return createErrorResponse('Failed to stop process', result.error);
+    }
 
-      processInfo.process.on('exit', () => {
-        terminated = true;
-        resolve(true);
-      });
-
-      setTimeout(() => {
-        if (!terminated) {
-          processInfo.process.kill('SIGKILL');
-        }
-        resolve(true);
-      }, timeout);
-    });
-
-    processManager.removeProcess(params.pid);
+    const startedAt = result.startedAt ?? processInfo.startedAt;
 
     return {
       content: [
         {
           type: 'text',
-          text: `✅ Stopped executable (was running since ${processInfo.startedAt.toISOString()})`,
+          text: `✅ Stopped executable (was running since ${startedAt.toISOString()})`,
         },
         {
           type: 'text',

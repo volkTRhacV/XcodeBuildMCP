@@ -28,21 +28,93 @@ export interface AxeHelpers {
   getBundledAxeEnvironment: () => Record<string, string>;
 }
 
+function createTimeoutPromise(timeoutMs: number): Promise<'timed_out'> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timed_out'), timeoutMs);
+    timer.unref?.();
+  });
+}
+
+async function waitForChildToStop(session: Session, timeoutMs: number): Promise<void> {
+  const child = session.process as ChildProcess | undefined;
+  if (!child) {
+    return;
+  }
+
+  const alreadyEnded = session.ended || child.exitCode !== null;
+  const hasSignal = (child as unknown as { signalCode?: string | null }).signalCode != null;
+  if (alreadyEnded || hasSignal) {
+    session.ended = true;
+    return;
+  }
+
+  const closePromise = new Promise<'closed'>((resolve) => {
+    let resolved = false;
+    const finish = (): void => {
+      if (!resolved) {
+        resolved = true;
+        session.ended = true;
+        resolve('closed');
+      }
+    };
+
+    child.once('close', finish);
+    child.once('exit', finish);
+  }).catch(() => 'closed' as const);
+
+  const outcome = await Promise.race([closePromise, createTimeoutPromise(timeoutMs)]);
+  if (outcome === 'timed_out') {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function stopSession(
+  simulatorUuid: string,
+  options: { timeoutMs?: number } = {},
+): Promise<{ sessionId?: string; stdout?: string; parsedPath?: string; error?: string }> {
+  const session = sessions.get(simulatorUuid);
+  if (!session) {
+    return { error: 'No active video recording session for this simulator' };
+  }
+
+  sessions.delete(simulatorUuid);
+  const child = session.process as ChildProcess | undefined;
+
+  try {
+    child?.kill?.('SIGINT');
+  } catch {
+    try {
+      child?.kill?.();
+    } catch {
+      // ignore
+    }
+  }
+
+  await waitForChildToStop(session, options.timeoutMs ?? 5000);
+
+  const combinedOutput = session.buffer;
+  const parsedPath = parseLastAbsoluteMp4Path(combinedOutput) ?? undefined;
+
+  session.releaseActivity?.();
+
+  return {
+    sessionId: session.sessionId,
+    stdout: combinedOutput,
+    parsedPath,
+  };
+}
+
 function ensureSignalHandlersAttached(): void {
   if (signalHandlersAttached) return;
   signalHandlersAttached = true;
 
   const stopAll = (): void => {
-    for (const [simulatorUuid, sess] of sessions) {
-      try {
-        const child = sess.process as ChildProcess | undefined;
-        child?.kill?.('SIGINT');
-      } catch {
-        // ignore
-      } finally {
-        sess.releaseActivity?.();
-        sessions.delete(simulatorUuid);
-      }
+    for (const simulatorUuid of sessions.keys()) {
+      void stopSession(simulatorUuid, { timeoutMs: 250 });
     }
   };
 
@@ -71,9 +143,6 @@ export function listActiveVideoCaptureSessionIds(): string[] {
   return Array.from(sessions.keys()).sort();
 }
 
-/**
- * Start recording video for a simulator using AXe.
- */
 export async function startSimulatorVideoCapture(
   params: { simulatorUuid: string; fps?: number },
   executor: CommandExecutor,
@@ -128,24 +197,15 @@ export async function startSimulatorVideoCapture(
 
   try {
     child.stdout?.on('data', (d: unknown) => {
-      try {
-        session.buffer += String(d ?? '');
-      } catch {
-        // ignore
-      }
+      session.buffer += String(d ?? '');
     });
     child.stderr?.on('data', (d: unknown) => {
-      try {
-        session.buffer += String(d ?? '');
-      } catch {
-        // ignore
-      }
+      session.buffer += String(d ?? '');
     });
   } catch {
     // ignore stream listener setup failures
   }
 
-  // Track when the child process naturally ends, so stop can short-circuit
   try {
     child.once?.('exit', () => {
       session.ended = true;
@@ -167,9 +227,6 @@ export async function startSimulatorVideoCapture(
   };
 }
 
-/**
- * Stop recording video for a simulator. Returns aggregated output and parsed MP4 path if found.
- */
 export async function stopSimulatorVideoCapture(
   params: { simulatorUuid: string },
   executor: CommandExecutor,
@@ -180,7 +237,6 @@ export async function stopSimulatorVideoCapture(
   parsedPath?: string;
   error?: string;
 }> {
-  // Mark executor as used to satisfy lint rule
   void executor;
 
   const simulatorUuid = params.simulatorUuid;
@@ -188,68 +244,42 @@ export async function stopSimulatorVideoCapture(
     return { stopped: false, error: 'simulatorUuid is required' };
   }
 
-  const session = sessions.get(simulatorUuid);
-  if (!session) {
-    return { stopped: false, error: 'No active video recording session for this simulator' };
+  const result = await stopSession(simulatorUuid, { timeoutMs: 5000 });
+  if (result.error) {
+    return { stopped: false, error: result.error };
   }
-
-  const child = session.process as ChildProcess | undefined;
-
-  // Attempt graceful shutdown
-  try {
-    child?.kill?.('SIGINT');
-  } catch {
-    try {
-      child?.kill?.();
-    } catch {
-      // ignore
-    }
-  }
-
-  // Wait for process to close (avoid hanging if it already exited)
-  await new Promise<void>((resolve): void => {
-    if (!child) return resolve();
-
-    // If process has already ended, resolve immediately
-    const alreadyEnded = (session as Session).ended === true;
-    const hasExitCode = (child as ChildProcess).exitCode !== null;
-    const hasSignal = (child as unknown as { signalCode?: string | null }).signalCode != null;
-    if (alreadyEnded || hasExitCode || hasSignal) {
-      return resolve();
-    }
-
-    let resolved = false;
-    const finish = (): void => {
-      if (!resolved) {
-        resolved = true;
-        resolve();
-      }
-    };
-    try {
-      child.once('close', finish);
-      child.once('exit', finish);
-    } catch {
-      return finish();
-    }
-    // Safety timeout to prevent indefinite hangs
-    setTimeout(finish, 5000);
-  });
-
-  const combinedOutput = session.buffer;
-  const parsedPath = parseLastAbsoluteMp4Path(combinedOutput) ?? undefined;
-
-  session.releaseActivity?.();
-  sessions.delete(simulatorUuid);
 
   log(
     'info',
-    `Stopped AXe video recording for simulator ${simulatorUuid}. ${parsedPath ? `Detected file: ${parsedPath}` : 'No file detected in output.'}`,
+    `Stopped AXe video recording for simulator ${simulatorUuid}. ${result.parsedPath ? `Detected file: ${result.parsedPath}` : 'No file detected in output.'}`,
   );
 
   return {
     stopped: true,
-    sessionId: session.sessionId,
-    stdout: combinedOutput,
-    parsedPath,
+    sessionId: result.sessionId,
+    stdout: result.stdout,
+    parsedPath: result.parsedPath,
+  };
+}
+
+export async function stopAllVideoCaptureSessions(timeoutMs = 1000): Promise<{
+  stoppedSessionCount: number;
+  errorCount: number;
+  errors: string[];
+}> {
+  const simulatorIds = Array.from(sessions.keys());
+  const errors: string[] = [];
+
+  for (const simulatorUuid of simulatorIds) {
+    const result = await stopSession(simulatorUuid, { timeoutMs });
+    if (result.error) {
+      errors.push(`${simulatorUuid}: ${result.error}`);
+    }
+  }
+
+  return {
+    stoppedSessionCount: simulatorIds.length - errors.length,
+    errorCount: errors.length,
+    errors,
   };
 }

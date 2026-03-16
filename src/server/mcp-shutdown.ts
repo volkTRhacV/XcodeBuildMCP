@@ -1,0 +1,200 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { getDefaultDebuggerManager } from '../utils/debugger/index.ts';
+import { stopXcodeStateWatcher } from '../utils/xcode-state-watcher.ts';
+import { shutdownXcodeToolsBridge } from '../integrations/xcode-tools-bridge/index.ts';
+import { stopAllLogCaptures } from '../utils/log_capture.ts';
+import { stopAllDeviceLogCaptures } from '../utils/log-capture/device-log-sessions.ts';
+import { stopAllVideoCaptureSessions } from '../utils/video_capture.ts';
+import { stopAllTrackedProcesses } from '../mcp/tools/swift-package/active-processes.ts';
+import {
+  captureMcpShutdownSummary,
+  flushSentry,
+  type FlushSentryOutcome,
+} from '../utils/sentry.ts';
+import { sealSentryCapture } from '../utils/shutdown-state.ts';
+import type { McpLifecycleSnapshot, McpShutdownReason } from './mcp-lifecycle.ts';
+import { isTransportDisconnectReason } from './mcp-lifecycle.ts';
+
+const DISCONNECT_SERVER_CLOSE_TIMEOUT_MS = 150;
+const DEFAULT_SERVER_CLOSE_TIMEOUT_MS = 1000;
+const STEP_TIMEOUT_MS = 1000;
+const DISCONNECT_FLUSH_TIMEOUT_MS = 250;
+const DEFAULT_FLUSH_TIMEOUT_MS = 1500;
+
+export type ShutdownStepStatus = 'completed' | 'timed_out' | 'failed' | 'skipped';
+
+export interface ShutdownStepResult {
+  name: string;
+  status: ShutdownStepStatus;
+  durationMs: number;
+  error?: string;
+}
+
+interface ShutdownStepOutcome<T> {
+  status: ShutdownStepStatus;
+  durationMs: number;
+  value?: T;
+  error?: string;
+}
+
+export interface McpShutdownResult {
+  exitCode: number;
+  transportDisconnected: boolean;
+  sentryFlush: FlushSentryOutcome;
+  steps: ShutdownStepResult[];
+}
+
+function stringifyError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function createTimer(timeoutMs: number, callback: () => void): NodeJS.Timeout {
+  const timer = setTimeout(callback, timeoutMs);
+  timer.unref?.();
+  return timer;
+}
+
+async function runStep<T>(
+  name: string,
+  timeoutMs: number,
+  operation: () => Promise<T>,
+): Promise<ShutdownStepOutcome<T>> {
+  const startedAt = Date.now();
+  let timeoutHandle: NodeJS.Timeout | null = null;
+
+  try {
+    const timeoutPromise = new Promise<'timed_out'>((resolve) => {
+      timeoutHandle = createTimer(timeoutMs, () => resolve('timed_out'));
+    });
+    const operationPromise = operation();
+    const outcome = await Promise.race([
+      operationPromise.then((value) => ({ kind: 'value' as const, value })),
+      timeoutPromise.then(() => ({ kind: 'timed_out' as const })),
+    ]);
+
+    if (outcome.kind === 'timed_out') {
+      return {
+        status: 'timed_out',
+        durationMs: Date.now() - startedAt,
+      };
+    }
+
+    return {
+      status: 'completed',
+      durationMs: Date.now() - startedAt,
+      value: outcome.value,
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      durationMs: Date.now() - startedAt,
+      error: stringifyError(error),
+    };
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+function buildExitCode(reason: McpShutdownReason): number {
+  return reason === 'startup-failure' ||
+    reason === 'uncaught-exception' ||
+    reason === 'unhandled-rejection'
+    ? 1
+    : 0;
+}
+
+export async function closeServerWithTimeout(
+  server: Pick<McpServer, 'close'> | null | undefined,
+  timeoutMs: number,
+): Promise<'skipped' | 'closed' | 'timed_out' | 'rejected'> {
+  if (!server) {
+    return 'skipped';
+  }
+
+  const outcome = await runStep('server.close', timeoutMs, () => server.close());
+  if (outcome.status === 'completed') {
+    return 'closed';
+  }
+  if (outcome.status === 'timed_out') {
+    return 'timed_out';
+  }
+  return 'rejected';
+}
+
+export async function runMcpShutdown(input: {
+  reason: McpShutdownReason;
+  error?: unknown;
+  snapshot: McpLifecycleSnapshot;
+  server: Pick<McpServer, 'close'> | null;
+}): Promise<McpShutdownResult> {
+  const shutdownStartedAt = Date.now();
+  const exitCode = buildExitCode(input.reason);
+  const transportDisconnected = isTransportDisconnectReason(input.reason);
+  const steps: ShutdownStepResult[] = [];
+
+  const pushStep = (name: string, outcome: ShutdownStepOutcome<unknown>): void => {
+    steps.push({
+      name,
+      status: outcome.status,
+      durationMs: outcome.durationMs,
+      ...(outcome.error ? { error: outcome.error } : {}),
+    });
+  };
+
+  const serverCloseTimeout = transportDisconnected
+    ? DISCONNECT_SERVER_CLOSE_TIMEOUT_MS
+    : DEFAULT_SERVER_CLOSE_TIMEOUT_MS;
+
+  const serverCloseOutcome = await runStep('server.close', serverCloseTimeout, async () => {
+    await input.server?.close();
+  });
+  pushStep('server.close', serverCloseOutcome);
+
+  const cleanupSteps: Array<[string, () => Promise<unknown>]> = [
+    ['watcher.stop', () => stopXcodeStateWatcher()],
+    ['xcode-tools-bridge.shutdown', () => shutdownXcodeToolsBridge()],
+    ['debugger.dispose-all', () => getDefaultDebuggerManager().disposeAll()],
+    ['simulator-logs.stop-all', () => stopAllLogCaptures(STEP_TIMEOUT_MS)],
+    ['device-logs.stop-all', () => stopAllDeviceLogCaptures(STEP_TIMEOUT_MS)],
+    ['video-capture.stop-all', () => stopAllVideoCaptureSessions(STEP_TIMEOUT_MS)],
+    ['swift-processes.stop-all', () => stopAllTrackedProcesses(STEP_TIMEOUT_MS)],
+  ];
+
+  for (const [name, operation] of cleanupSteps) {
+    const outcome = await runStep(name, STEP_TIMEOUT_MS, operation);
+    pushStep(name, outcome);
+  }
+
+  const triggerError = input.error === undefined ? undefined : stringifyError(input.error);
+  const cleanupFailureCount = steps.filter(
+    (step) => step.status === 'failed' || step.status === 'timed_out',
+  ).length;
+
+  captureMcpShutdownSummary({
+    reason: input.reason,
+    phase: input.snapshot.phase,
+    exitCode,
+    transportDisconnected,
+    triggerError,
+    cleanupFailureCount,
+    shutdownDurationMs: Date.now() - shutdownStartedAt,
+    snapshot: input.snapshot as unknown as Record<string, unknown>,
+    steps: steps as unknown as Array<Record<string, unknown>>,
+  });
+
+  sealSentryCapture();
+
+  const flushTimeout = transportDisconnected
+    ? DISCONNECT_FLUSH_TIMEOUT_MS
+    : DEFAULT_FLUSH_TIMEOUT_MS;
+  const sentryFlush = await flushSentry(flushTimeout);
+
+  return {
+    exitCode,
+    transportDisconnected,
+    sentryFlush,
+    steps,
+  };
+}

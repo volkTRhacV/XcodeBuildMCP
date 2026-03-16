@@ -5,7 +5,9 @@ import {
   buildMcpLifecycleSnapshot,
   classifyMcpLifecycleAnomalies,
   createMcpLifecycleCoordinator,
+  isTransportDisconnectReason,
 } from '../mcp-lifecycle.ts';
+import * as shutdownState from '../../utils/shutdown-state.ts';
 
 class TestStdin extends EventEmitter {
   override once(event: string, listener: (...args: unknown[]) => void): this {
@@ -20,6 +22,7 @@ class TestStdin extends EventEmitter {
 class TestProcess extends EventEmitter {
   readonly stdin = new TestStdin();
   readonly stdout = new TestStdin();
+  readonly stderr = new TestStdin();
 
   override once(event: string, listener: (...args: unknown[]) => void): this {
     return super.once(event, listener);
@@ -91,6 +94,9 @@ describe('mcp lifecycle coordinator', () => {
   });
 
   it('maps broken stdout pipes to shutdowns', async () => {
+    const suppressSpy = vi
+      .spyOn(shutdownState, 'suppressProcessStdioWrites')
+      .mockImplementation(() => undefined);
     const processRef = new TestProcess();
     const onShutdown = vi.fn().mockResolvedValue(undefined);
     const coordinator = createMcpLifecycleCoordinator({
@@ -106,6 +112,29 @@ describe('mcp lifecycle coordinator', () => {
     });
 
     expect(onShutdown.mock.calls[0]?.[0]?.reason).toBe('stdout-error');
+    expect(suppressSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps broken stderr pipes to shutdowns', async () => {
+    const processRef = new TestProcess();
+    const onShutdown = vi.fn().mockResolvedValue(undefined);
+    const suppressSpy = vi
+      .spyOn(shutdownState, 'suppressProcessStdioWrites')
+      .mockImplementation(() => undefined);
+    const coordinator = createMcpLifecycleCoordinator({
+      commandExecutor: createMockExecutor({ output: '' }),
+      processRef,
+      onShutdown,
+    });
+
+    coordinator.attachProcessHandlers();
+    processRef.stderr.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+    await vi.waitFor(() => {
+      expect(onShutdown).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onShutdown.mock.calls[0]?.[0]?.reason).toBe('stderr-error');
+    expect(suppressSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -146,6 +175,16 @@ describe('mcp lifecycle snapshot', () => {
 
     expect(snapshot.matchingMcpProcessCount).toBe(2);
     expect(snapshot.matchingMcpPeerSummary).toEqual([{ pid: 999, ageSeconds: 180, rssKb: 1024 }]);
+    expect(snapshot.ppid).toBe(process.ppid);
+    expect(snapshot.orphaned).toBe(process.ppid === 1);
     expect(snapshot.anomalies).toEqual(['peer-age-high']);
+  });
+
+  it('classifies transport disconnect reasons', () => {
+    expect(isTransportDisconnectReason('stdin-end')).toBe(true);
+    expect(isTransportDisconnectReason('stdin-close')).toBe(true);
+    expect(isTransportDisconnectReason('stdout-error')).toBe(true);
+    expect(isTransportDisconnectReason('stderr-error')).toBe(true);
+    expect(isTransportDisconnectReason('sigterm')).toBe(false);
   });
 });

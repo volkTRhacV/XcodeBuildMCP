@@ -11,56 +11,21 @@ import { createServer, startServer } from './server.ts';
 import { log, setLogLevel } from '../utils/logger.ts';
 import {
   enrichSentryContext,
-  flushAndCloseSentry,
   initSentry,
   recordMcpLifecycleAnomalyMetric,
   recordMcpLifecycleMetric,
   setSentryRuntimeContext,
 } from '../utils/sentry.ts';
-import { getDefaultDebuggerManager } from '../utils/debugger/index.ts';
 import { version } from '../version.ts';
 import process from 'node:process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { bootstrapServer } from './bootstrap.ts';
-import { shutdownXcodeToolsBridge } from '../integrations/xcode-tools-bridge/index.ts';
 import { createStartupProfiler, getStartupProfileNowMs } from './startup-profiler.ts';
 import { getConfig } from '../utils/config-store.ts';
 import { getRegisteredWorkflows } from '../utils/tool-registry.ts';
 import { hydrateSentryDisabledEnvFromProjectConfig } from '../utils/sentry-config.ts';
-import { stopXcodeStateWatcher } from '../utils/xcode-state-watcher.ts';
-import { createMcpLifecycleCoordinator } from './mcp-lifecycle.ts';
-
-const FAST_EXIT_SERVER_CLOSE_TIMEOUT_MS = 100;
-
-interface ClosableMcpServer {
-  close(): Promise<void>;
-}
-
-type FastExitCloseOutcome = 'skipped' | 'closed' | 'rejected' | 'timed_out';
-
-function isTransportDisconnectReason(reason: string): boolean {
-  return reason === 'stdin-end' || reason === 'stdin-close' || reason === 'stdout-error';
-}
-
-export async function __closeServerForFastExitForTests(
-  server: ClosableMcpServer | null | undefined,
-  timeoutMs = FAST_EXIT_SERVER_CLOSE_TIMEOUT_MS,
-): Promise<FastExitCloseOutcome> {
-  if (!server) {
-    return 'skipped';
-  }
-
-  const closePromise = server
-    .close()
-    .then<FastExitCloseOutcome>(() => 'closed')
-    .catch<FastExitCloseOutcome>(() => 'rejected');
-
-  const timeoutPromise = new Promise<FastExitCloseOutcome>((resolve) => {
-    setTimeout(() => resolve('timed_out'), timeoutMs);
-  });
-
-  return Promise.race([closePromise, timeoutPromise]);
-}
+import { createMcpLifecycleCoordinator, isTransportDisconnectReason } from './mcp-lifecycle.ts';
+import { runMcpShutdown } from './mcp-shutdown.ts';
 
 /**
  * Start the MCP server.
@@ -70,17 +35,8 @@ export async function __closeServerForFastExitForTests(
 export async function startMcpServer(): Promise<void> {
   const lifecycle = createMcpLifecycleCoordinator({
     onShutdown: async ({ reason, error, snapshot, server }) => {
-      const closeableServer: Pick<McpServer, 'close'> | null = server;
       const isCrash = reason === 'uncaught-exception' || reason === 'unhandled-rejection';
       const event = isCrash ? 'crash' : 'shutdown';
-      const exitCode =
-        reason === 'stdin-end' ||
-        reason === 'stdin-close' ||
-        reason === 'stdout-error' ||
-        reason === 'sigint' ||
-        reason === 'sigterm'
-          ? 0
-          : 1;
 
       if (reason === 'stdin-end') {
         log('info', 'MCP stdin ended; shutting down MCP server');
@@ -88,92 +44,42 @@ export async function startMcpServer(): Promise<void> {
         log('info', 'MCP stdin closed; shutting down MCP server');
       } else if (reason === 'stdout-error') {
         log('info', 'MCP stdout pipe broke; shutting down MCP server');
+      } else if (reason === 'stderr-error') {
+        log('info', 'MCP stderr pipe broke; shutting down MCP server');
       } else {
         log('info', `MCP shutdown requested: ${reason}`);
       }
 
-      log(
-        'info',
-        `[mcp-lifecycle] ${event} ${JSON.stringify(snapshot)}`,
-        isCrash || snapshot.anomalies.length > 0 ? { sentry: true } : undefined,
-      );
-
-      if (isTransportDisconnectReason(reason)) {
-        lifecycle.detachProcessHandlers();
-        await __closeServerForFastExitForTests(closeableServer);
-        process.exit(exitCode);
-      }
-
-      recordMcpLifecycleMetric({
-        event,
-        phase: snapshot.phase,
-        reason,
-        uptimeMs: snapshot.uptimeMs,
-        rssBytes: snapshot.rssBytes,
-        matchingMcpProcessCount: snapshot.matchingMcpProcessCount,
-        activeOperationCount: snapshot.activeOperationCount,
-        watcherRunning: snapshot.watcherRunning,
-      });
-
-      for (const anomaly of snapshot.anomalies) {
-        recordMcpLifecycleAnomalyMetric({
-          kind: anomaly,
+      if (!isTransportDisconnectReason(reason)) {
+        recordMcpLifecycleMetric({
+          event,
           phase: snapshot.phase,
           reason,
+          uptimeMs: snapshot.uptimeMs,
+          rssBytes: snapshot.rssBytes,
+          matchingMcpProcessCount: snapshot.matchingMcpProcessCount,
+          activeOperationCount: snapshot.activeOperationCount,
+          watcherRunning: snapshot.watcherRunning,
         });
+
+        for (const anomaly of snapshot.anomalies) {
+          recordMcpLifecycleAnomalyMetric({
+            kind: anomaly,
+            phase: snapshot.phase,
+            reason,
+          });
+        }
       }
 
-      if (snapshot.anomalies.length > 0) {
-        log('warn', `[mcp-lifecycle] observed anomalies: ${snapshot.anomalies.join(', ')}`, {
-          sentry: true,
-        });
-      }
-
-      if (error !== undefined) {
-        log('error', `MCP shutdown due to ${reason}: ${String(error)}`, { sentry: true });
-      }
-
-      if (reason === 'stdin-end' || reason === 'stdin-close') {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-
-      let cleanupExitCode = exitCode;
-
-      try {
-        await stopXcodeStateWatcher();
-      } catch (shutdownError) {
-        cleanupExitCode = 1;
-        log('error', `Failed to stop Xcode watcher: ${String(shutdownError)}`, { sentry: true });
-      }
-
-      try {
-        await shutdownXcodeToolsBridge();
-      } catch (shutdownError) {
-        cleanupExitCode = 1;
-        log('error', `Failed to shutdown Xcode tools bridge: ${String(shutdownError)}`, {
-          sentry: true,
-        });
-      }
-
-      try {
-        await getDefaultDebuggerManager().disposeAll();
-      } catch (shutdownError) {
-        cleanupExitCode = 1;
-        log('error', `Failed to dispose debugger sessions: ${String(shutdownError)}`, {
-          sentry: true,
-        });
-      }
-
-      try {
-        await closeableServer?.close();
-      } catch (shutdownError) {
-        cleanupExitCode = 1;
-        log('error', `Failed to close MCP server: ${String(shutdownError)}`, { sentry: true });
-      }
+      const result = await runMcpShutdown({
+        reason,
+        error,
+        snapshot,
+        server: server ? ({ close: () => server.close() } as Pick<McpServer, 'close'>) : null,
+      });
 
       lifecycle.detachProcessHandlers();
-      await flushAndCloseSentry(2000);
-      process.exit(cleanupExitCode);
+      process.exit(result.exitCode);
     },
   });
 

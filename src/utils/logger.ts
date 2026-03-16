@@ -20,6 +20,7 @@
 import { createWriteStream, type WriteStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { areProcessStdioWritesSuppressed, isSentryCaptureSealed } from './shutdown-state.ts';
 
 function isSentryDisabledFromEnv(): boolean {
   return (
@@ -54,7 +55,7 @@ export interface LogContext {
 }
 
 export function __shouldCaptureToSentryForTests(context?: LogContext): boolean {
-  return context?.sentry === true;
+  return context?.sentry === true && !isSentryCaptureSealed();
 }
 
 // Client-requested log level ("none" means no output unless explicitly enabled)
@@ -196,7 +197,9 @@ export function setLogFile(path: string | null): void {
       logFilePath = null;
       const message = error instanceof Error ? error.message : String(error);
       const timestamp = new Date().toISOString();
-      console.error(`[${timestamp}] [ERROR] Log file disabled after error: ${message}`);
+      if (!areProcessStdioWritesSuppressed()) {
+        console.error(`[${timestamp}] [ERROR] Log file disabled after error: ${message}`);
+      }
     });
     logFileStream = stream;
     logFilePath = path;
@@ -276,5 +279,9 @@ export function log(level: string, message: string, context?: LogContext): void 
 
   // Uses stderr to avoid interfering with MCP protocol on stdout
   // https://modelcontextprotocol.io/docs/tools/debugging#server-side-logging
+  if (areProcessStdioWritesSuppressed()) {
+    return;
+  }
+
   console.error(logMessage);
 }

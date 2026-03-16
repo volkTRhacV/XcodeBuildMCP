@@ -9,6 +9,7 @@ import { listActiveVideoCaptureSessionIds } from '../utils/video_capture.ts';
 import { getDefaultCommandExecutor } from '../utils/execution/index.ts';
 import type { CommandExecutor } from '../utils/execution/index.ts';
 import { getWatchedPath, isWatcherRunning } from '../utils/xcode-state-watcher.ts';
+import { suppressProcessStdioWrites } from '../utils/shutdown-state.ts';
 
 export type McpStartupPhase =
   | 'initializing'
@@ -26,6 +27,7 @@ export type McpShutdownReason =
   | 'stdin-end'
   | 'stdin-close'
   | 'stdout-error'
+  | 'stderr-error'
   | 'sigint'
   | 'sigterm'
   | 'startup-failure'
@@ -46,6 +48,8 @@ export interface McpPeerProcessSummary {
 
 export interface McpLifecycleSnapshot {
   pid: number;
+  ppid: number;
+  orphaned: boolean;
   phase: McpStartupPhase;
   shutdownReason: McpShutdownReason | null;
   uptimeMs: number;
@@ -83,6 +87,7 @@ interface LifecycleStdoutLike {
 interface LifecycleProcessLike {
   stdin: LifecycleStdinLike;
   stdout?: LifecycleStdoutLike;
+  stderr?: LifecycleStdoutLike;
   once(event: string, listener: (...args: unknown[]) => void): this;
   removeListener(event: string, listener: (...args: unknown[]) => void): this;
 }
@@ -267,6 +272,15 @@ async function sampleMcpPeerProcesses(
   }
 }
 
+export function isTransportDisconnectReason(reason: McpShutdownReason): boolean {
+  return (
+    reason === 'stdin-end' ||
+    reason === 'stdin-close' ||
+    reason === 'stdout-error' ||
+    reason === 'stderr-error'
+  );
+}
+
 export async function buildMcpLifecycleSnapshot(options: {
   phase: McpStartupPhase;
   shutdownReason: McpShutdownReason | null;
@@ -282,6 +296,8 @@ export async function buildMcpLifecycleSnapshot(options: {
 
   const snapshotWithoutAnomalies = {
     pid: process.pid,
+    ppid: process.ppid,
+    orphaned: process.ppid === 1,
     phase: options.phase,
     shutdownReason: options.shutdownReason,
     uptimeMs: Math.max(0, Date.now() - options.startedAtMs),
@@ -326,16 +342,26 @@ export function createMcpLifecycleCoordinator(
     void coordinator.shutdown('sigint');
   };
   const handleStdinEnd = (): void => {
+    suppressProcessStdioWrites();
     void coordinator.shutdown('stdin-end');
   };
   const handleStdinClose = (): void => {
+    suppressProcessStdioWrites();
     void coordinator.shutdown('stdin-close');
   };
   const handleStdoutError = (error: unknown): void => {
     if (!isBrokenPipeLikeError(error)) {
       return;
     }
+    suppressProcessStdioWrites();
     void coordinator.shutdown('stdout-error', error);
+  };
+  const handleStderrError = (error: unknown): void => {
+    if (!isBrokenPipeLikeError(error)) {
+      return;
+    }
+    suppressProcessStdioWrites();
+    void coordinator.shutdown('stderr-error', error);
   };
   const handleUncaughtException = (error: unknown): void => {
     void coordinator.shutdown('uncaught-exception', error);
@@ -358,6 +384,7 @@ export function createMcpLifecycleCoordinator(
       processRef.stdin.once('end', handleStdinEnd);
       processRef.stdin.once('close', handleStdinClose);
       processRef.stdout?.once('error', handleStdoutError);
+      processRef.stderr?.once('error', handleStderrError);
       processRef.once('uncaughtException', handleUncaughtException);
       processRef.once('unhandledRejection', handleUnhandledRejection);
     },
@@ -373,6 +400,7 @@ export function createMcpLifecycleCoordinator(
       processRef.stdin.removeListener('end', handleStdinEnd);
       processRef.stdin.removeListener('close', handleStdinClose);
       processRef.stdout?.removeListener('error', handleStdoutError);
+      processRef.stderr?.removeListener('error', handleStderrError);
       processRef.removeListener('uncaughtException', handleUncaughtException);
       processRef.removeListener('unhandledRejection', handleUnhandledRejection);
     },

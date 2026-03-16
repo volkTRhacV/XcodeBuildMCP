@@ -121,20 +121,37 @@ export class DebuggerManager {
   }
 
   async disposeAll(): Promise<void> {
+    const sessions = Array.from(this.sessions.values());
+    this.sessions.clear();
+    this.currentSessionId = null;
+
+    const runWithTimeout = async (
+      operation: () => Promise<void>,
+      timeoutMs: number,
+    ): Promise<void> => {
+      const timeoutPromise = new Promise<'timed_out'>((resolve) => {
+        const timer = setTimeout(() => resolve('timed_out'), timeoutMs);
+        timer.unref?.();
+      });
+
+      await Promise.race([
+        operation()
+          .then(() => 'completed' as const)
+          .catch(() => 'failed' as const),
+        timeoutPromise,
+      ]);
+    };
+
     await Promise.allSettled(
-      Array.from(this.sessions.values()).map(async (session) => {
+      sessions.map(async (session) => {
         try {
-          await session.backend.detach();
-        } catch {
-          // Best-effort cleanup; detach can fail if the process exited.
+          await runWithTimeout(() => session.backend.detach(), 1000);
         } finally {
-          await session.backend.dispose();
+          await runWithTimeout(() => session.backend.dispose(), 1000);
           session.releaseActivity();
         }
       }),
     );
-    this.sessions.clear();
-    this.currentSessionId = null;
   }
 
   async addBreakpoint(
