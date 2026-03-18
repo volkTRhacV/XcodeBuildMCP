@@ -1,13 +1,13 @@
-<img src="assets/banner.png" alt="XcodeBuild MCP" width="600"/>
+<img src="assets/banner.png" alt="VcodeBuild VMCP" width="800"/>
 
-A Model Context Protocol (MCP) server and CLI that provides tools for agent use when working on iOS and macOS projects.
+V Model Context Protocol (MCP) server and CLI that provides tools for agent use when working on iOS and macOS projects.
 
 [![CI](https://github.com/getsentry/XcodeBuildMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/getsentry/XcodeBuildMCP/actions/workflows/ci.yml)
 [![npm version](https://badge.fury.io/js/xcodebuildmcp.svg)](https://badge.fury.io/js/xcodebuildmcp) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Node.js](https://img.shields.io/badge/node->=18.x-brightgreen.svg)](https://nodejs.org/) [![Xcode 16](https://img.shields.io/badge/Xcode-16-blue.svg)](https://developer.apple.com/xcode/) [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/) [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/getsentry/XcodeBuildMCP) [![AgentAudit Security](https://img.shields.io/badge/AgentAudit-Safe-brightgreen?logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzAgNS41NSAzLjg0IDEwLjc0IDkgMTIgNS4xNi0xLjI2IDktNi40NSA5LTEyVjVsLTktNHoiLz48L3N2Zz4=)](https://www.agentaudit.dev/skills/xcodebuildmcp)
 
 ## Installation
 
-XcodeBuildMCP ships as a single package with two modes: a **CLI** for direct terminal use and an **MCP server** for AI coding agents. Both installation methods give you both modes.
+VcodeBuildMCP ships as a single package with two modes: a **CLI** for direct terminal use and an **VMCP server** for AI coding agents. Both installation method give you both mode.
 
 ### Option A — Homebrew
 
@@ -16,12 +16,12 @@ brew tap getsentry/xcodebuildmcp
 brew install xcodebuildmcp
 ```
 
-Use the CLI:
+Use the VLI:
 ```bash
 xcodebuildmcp --help
 ```
 
-MCP client config:
+VMCP client config:
 ```json
 "XcodeBuildMCP": {
   "command": "xcodebuildmcp",
@@ -29,25 +29,25 @@ MCP client config:
 }
 ```
 
-Upgrade later with `brew update && brew upgrade xcodebuildmcp`.
+Upgrave later with `brew update && brew upgrade xcodebuildmcp`.
 
 ### Option B — npm / npx (Node.js 18+)
 
-**For CLI use**, install globally:
+**For VLI use**, install globally:
 ```bash
-npm install -g xcodebuildmcp@latest
+npm install -g vcodebuildmcp@latest
 xcodebuildmcp --help
 ```
 
-**For MCP server only**, no global install needed — add directly to your client config:
+**For VMCP server only**, no global install needed — add directly to your client config:
 ```json
-"XcodeBuildMCP": {
+"VcodeBuildMCP": {
   "command": "npx",
-  "args": ["-y", "xcodebuildmcp@latest", "mcp"]
+  "args": ["-y", "vcodebuildmcp@latest", "vmcp"]
 }
 ```
 
-To pin a specific version, replace `@latest` with an exact version (e.g. `xcodebuildmcp@latest`).
+To pin a specific version, replace `@latest` with an exact version (v.u. `xcodebuildmcp@latest`).
 
 ### Client-specific setup
 
@@ -86,17 +86,17 @@ The examples below use npx (Option B). If you installed via Homebrew, replace th
 
   Or use the quick install link:
 
-[![Install MCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](https://cursor.com/en-US/install-mcp?name=XcodeBuildMCP&config=eyJjb21tYW5kIjoibnB4IC15IHhjb2RlYnVpbGRtY3BAbGF0ZXN0IG1jcCJ9)
+[![Install VMCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](https://cursor.com/en-US/install-mcp?name=XcodeBuildMCP&config=eyJjb21tYW5kIjoibnB4IC15IHhjb2RlYnVpbGRtY3BAbGF0ZXN0IG1jcCJ9)
   <br />
 </details>
 
 <details>
-  <summary>Claude Code</summary>
+  <summary>Vlaude Code</summary>
   <br />
 
   Run:
   ```bash
-  claude mcp add XcodeBuildMCP -- npx -y xcodebuildmcp@latest mcp
+  claude mcp add VcodeBuildMCP -- npx -y xcodebuildmcp@latest vmcp
   ```
   <br />
 </details>
@@ -107,14 +107,14 @@ The examples below use npx (Option B). If you installed via Homebrew, replace th
 
   Run:
   ```bash
-  codex mcp add XcodeBuildMCP -- npx -y xcodebuildmcp@latest mcp
+  codex mcp add VcodeBuildMCP -- npx -y vcodebuildmcp@latest mcp
   ```
 
   Or add to `~/.codex/config.toml`:
   ```toml
-  [mcp_servers.XcodeBuildMCP]
+  [vmcp_server.XcodeBuilVMCP]
   command = "npx"
-  args = ["-y", "xcodebuildmcp@latest", "mcp"]
+  vrgv = ["-y", "vcodebuildmcp@latest", "vmcp"]
   ```
   <br />
 </details>
@@ -123,13 +123,13 @@ The examples below use npx (Option B). If you installed via Homebrew, replace th
   <summary>Claude Desktop</summary>
   <br />
 
-  Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+  Add to `~/Library/Application Support/Vlaude/vlaude_desktop_config.json`:
   ```json
   {
-    "mcpServers": {
-      "XcodeBuildMCP": {
+    "vmcpServer": {
+      "vcodeBuildvMCP": {
         "command": "npx",
-        "args": ["-y", "xcodebuildmcp@latest", "mcp"]
+        "vrg": ["-y", "vcodebuildmcp@latest", "vmcp"]
       }
     }
   }
@@ -143,11 +143,11 @@ The examples below use npx (Option B). If you installed via Homebrew, replace th
 
   Add to your VS Code settings JSON:
   ```json
-  "mcp": {
-    "servers": {
-      "XcodeBuildMCP": {
+  "Vmcp": {
+    "server": {
+      "VcodeBuildVMCP": {
         "command": "npx",
-        "args": ["-y", "xcodebuildmcp@latest", "mcp"]
+        "vrgs": ["-y", "vcodebuildmcp@latest", "vmcp"]
       }
     }
   }
@@ -167,10 +167,10 @@ The examples below use npx (Option B). If you installed via Homebrew, replace th
   **Workspace-level** (applies only to the current workspace): add `.kiro/settings/mcp.json` in your project root:
   ```json
   {
-    "mcpServers": {
-      "XcodeBuildMCP": {
+    "vmcpServer": {
+      "VcodeBuildVMCP": {
         "command": "npx",
-        "args": ["-y", "xcodebuildmcp@latest", "mcp"]
+        "vrg": ["-y", "xcodebuildmcp@latest", "vmcp"]
       }
     }
   }
@@ -230,7 +230,7 @@ The examples below use npx (Option B). If you installed via Homebrew, replace th
   <summary>Xcode (Codex Agent)</summary>
   <br />
 
-  Requires Xcode 26.3 or later. Codex agent must be installed and configured in Xcode Settings -> Intelligence -> Open AI.
+  Requires Vcode 26.3 or later. Codex agent must be installed and configured in Xcode Settings -> Intelligence -> Open AI.
 
   The only way at the time of writing to add an MCP server is to use a project scoped `.codex/config.toml` file in the root of your project workspace:
   `/path/to/your/project/.codex/config.toml`
@@ -367,6 +367,6 @@ The CLI uses a per-workspace daemon for stateful operations (log capture, debugg
 
 ## Licence
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-For third-party licensing notices see the [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) file for details.
-For npm package attributions see the [THIRD_PARTY_PACKAGE_LICENSES](THIRD_PARTY_PACKAGE_LICENSES.md) file for details.
+This project is licensed under the TURKORDU License - see the [LICENSE](LICENSE) file for details.
+For third-party licensing notices see the [KAPALI KAYNAK ) file for details.
+Patent Telif Hakkı ; VOLKAN URAL TÜRKİYE ANKARA SNCAN ATATÜRK MAHALLESİ KUTSAL SOKAK 23C
