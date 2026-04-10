@@ -452,11 +452,7 @@ export async function build_run_simLogic(
         data: { step: 'launch-app', status: 'started', appPath: appBundlePath },
       });
 
-      const launchResult: LaunchWithLoggingResult = await launcher(
-        simulatorId,
-        bundleId,
-        executor,
-      );
+      const launchResult: LaunchWithLoggingResult = await launcher(simulatorId, bundleId, executor);
       if (!launchResult.success) {
         const errorMessage = launchResult.error ?? 'Failed to launch app';
         log('error', `Failed to launch app: ${errorMessage}`);
