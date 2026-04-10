@@ -3,4 +3,5 @@
 
 ✅ Synced session defaults from Xcode IDE (default profile)
   ├ scheme: CalculatorApp
+  ├ simulatorId: <UUID>
   └ bundleId: io.sentry.calculatorapp

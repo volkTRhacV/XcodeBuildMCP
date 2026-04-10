@@ -1,10 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { simulatorsResourceLogic } from '../simulators.ts';
-import {
-  createMockCommandResponse,
-  createMockExecutor,
-} from '../../../test-utils/mock-executors.ts';
+import { createMockExecutor } from '../../../test-utils/mock-executors.ts';
 
 describe('simulators resource', () => {
   describe('Handler Functionality', () => {
@@ -48,34 +45,17 @@ describe('simulators resource', () => {
       expect(result.contents[0].text).toContain('Command failed');
     });
 
-    it('should handle JSON parsing errors and fall back to text parsing', async () => {
-      const mockTextOutput = `== Devices ==
--- iOS 17.0 --
-    iPhone 15 (test-uuid-123) (Shutdown)`;
-
-      const mockExecutor = async (command: string[]) => {
-        if (command.includes('--json')) {
-          return createMockCommandResponse({
-            success: true,
-            output: 'invalid json',
-            error: undefined,
-          });
-        }
-
-        return createMockCommandResponse({
-          success: true,
-          output: mockTextOutput,
-          error: undefined,
-        });
-      };
+    it('should handle JSON parsing errors', async () => {
+      const mockExecutor = createMockExecutor({
+        success: true,
+        output: 'invalid json',
+        error: undefined,
+      });
 
       const result = await simulatorsResourceLogic(mockExecutor);
 
       expect(result.contents).toHaveLength(1);
-      const text = result.contents[0].text;
-      expect(text).toContain('iPhone 15');
-      expect(text).toContain('test-uuid-123');
-      expect(text).toContain('iOS 17.0');
+      expect(result.contents[0].text).toContain('Failed to list simulators');
     });
 
     it('should handle spawn errors', async () => {

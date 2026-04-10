@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import path from 'node:path';
 import { createSnapshotHarness } from '../harness.ts';
 import { expectMatchesFixture } from '../fixture-io.ts';
 import type { SnapshotHarness } from '../harness.ts';
-import { addProcess, removeProcess } from '../../mcp/tools/swift-package/active-processes.ts';
+import { clearAllProcesses } from '../../mcp/tools/swift-package/active-processes.ts';
 
 const PACKAGE_PATH = 'example_projects/spm';
 
@@ -108,25 +107,10 @@ describe('swift-package workflow', () => {
 
   describe('list', () => {
     it('success', async () => {
-      const resolvedPkg = path.resolve('example_projects/spm');
-      const mockNow = Date.now();
-      const mockProcess = {
-        kill: () => {},
-        on: () => {},
-        pid: 12345,
-      };
-
-      addProcess(12345, {
-        process: mockProcess,
-        startedAt: new Date(mockNow - 10_000),
-        executableName: 'long-server',
-        packagePath: resolvedPkg,
-      });
-      addProcess(12346, {
-        process: { ...mockProcess, pid: 12346 },
-        startedAt: new Date(mockNow - 3_000),
-        executableName: 'quick-task',
-        packagePath: resolvedPkg,
+      await harness.invoke('swift-package', 'run', {
+        packagePath: PACKAGE_PATH,
+        executableName: 'spm',
+        background: true,
       });
 
       try {
@@ -134,10 +118,9 @@ describe('swift-package workflow', () => {
         expect(isError).toBe(false);
         expectMatchesFixture(text, __filename, 'list--success');
       } finally {
-        removeProcess(12345);
-        removeProcess(12346);
+        clearAllProcesses();
       }
-    });
+    }, 120_000);
   });
 
   describe('stop', () => {

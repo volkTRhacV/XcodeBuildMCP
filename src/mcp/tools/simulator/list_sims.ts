@@ -18,7 +18,6 @@ interface SimulatorDevice {
   udid: string;
   state: string;
   isAvailable: boolean;
-  runtime?: string;
 }
 
 export interface ListedSimulator {
@@ -30,39 +29,6 @@ export interface ListedSimulator {
 
 interface SimulatorData {
   devices: Record<string, SimulatorDevice[]>;
-}
-
-function parseTextOutput(textOutput: string): SimulatorDevice[] {
-  const devices: SimulatorDevice[] = [];
-  const lines = textOutput.split('\n');
-  let currentRuntime = '';
-
-  for (const line of lines) {
-    const runtimeMatch = line.match(/^-- ([\w\s.]+) --$/);
-    if (runtimeMatch) {
-      currentRuntime = runtimeMatch[1];
-      continue;
-    }
-
-    const deviceMatch = line.match(
-      /^\s+(.+?)\s+\(([^)]+)\)\s+\((Booted|Shutdown|Booting|Shutting Down)\)(\s+\(unavailable.*\))?$/i,
-    );
-    if (deviceMatch && currentRuntime) {
-      const [, name, udid, state, unavailableSuffix] = deviceMatch;
-      const isUnavailable = Boolean(unavailableSuffix);
-      if (!isUnavailable) {
-        devices.push({
-          name: name.trim(),
-          udid,
-          state,
-          isAvailable: true,
-          runtime: currentRuntime,
-        });
-      }
-    }
-  }
-
-  return devices;
 }
 
 function isSimulatorData(value: unknown): value is SimulatorData {
@@ -103,62 +69,32 @@ function isSimulatorData(value: unknown): value is SimulatorData {
 }
 
 export async function listSimulators(executor: CommandExecutor): Promise<ListedSimulator[]> {
-  const jsonCommand = ['xcrun', 'simctl', 'list', 'devices', '--json'];
-  const jsonResult = await executor(jsonCommand, 'List Simulators (JSON)', false);
+  const result = await executor(
+    ['xcrun', 'simctl', 'list', 'devices', '--json'],
+    'List Simulators',
+    false,
+  );
 
-  if (!jsonResult.success) {
-    throw new Error(`Failed to list simulators: ${jsonResult.error}`);
+  if (!result.success) {
+    throw new Error(`Failed to list simulators: ${result.error}`);
   }
 
-  let jsonDevices: Record<string, SimulatorDevice[]> = {};
-  try {
-    const parsedData: unknown = JSON.parse(jsonResult.output);
-    if (isSimulatorData(parsedData)) {
-      jsonDevices = parsedData.devices;
-    }
-  } catch {
-    log('warn', 'Failed to parse JSON output, falling back to text parsing');
-  }
-
-  const textCommand = ['xcrun', 'simctl', 'list', 'devices'];
-  const textResult = await executor(textCommand, 'List Simulators (Text)', false);
-  const textDevices = textResult.success ? parseTextOutput(textResult.output) : [];
-
-  const allDevices: Record<string, SimulatorDevice[]> = { ...jsonDevices };
-  const jsonUUIDs = new Set<string>();
-
-  for (const runtime in jsonDevices) {
-    for (const device of jsonDevices[runtime]) {
-      if (device.isAvailable) {
-        jsonUUIDs.add(device.udid);
-      }
-    }
-  }
-
-  for (const textDevice of textDevices) {
-    if (!jsonUUIDs.has(textDevice.udid)) {
-      const runtime = textDevice.runtime ?? 'Unknown Runtime';
-      if (!allDevices[runtime]) {
-        allDevices[runtime] = [];
-      }
-      allDevices[runtime].push(textDevice);
-      log(
-        'info',
-        `Added missing device from text parsing: ${textDevice.name} (${textDevice.udid})`,
-      );
-    }
+  const parsedData: unknown = JSON.parse(result.output);
+  if (!isSimulatorData(parsedData)) {
+    throw new Error('Unexpected simctl output format');
   }
 
   const listed: ListedSimulator[] = [];
-  for (const runtime in allDevices) {
-    const devices = allDevices[runtime].filter((d) => d.isAvailable);
-    for (const device of devices) {
-      listed.push({
-        runtime,
-        name: device.name,
-        udid: device.udid,
-        state: device.state,
-      });
+  for (const runtime in parsedData.devices) {
+    for (const device of parsedData.devices[runtime]) {
+      if (device.isAvailable) {
+        listed.push({
+          runtime,
+          name: device.name,
+          udid: device.udid,
+          state: device.state,
+        });
+      }
     }
   }
 
