@@ -14,10 +14,11 @@
     "xcodebuildmcp-doctor": "build/doctor-cli.js"
   },
   "scripts": {
-    "build": "npm run build:tsup",
+    "build": "wireit",
     "dev": "npm run build:tsup && node build/cli.js mcp",
     "build:tsup": "npm run generate:version && tsup",
     "dev:tsup": "npm run build:tsup && tsup --watch",
+    "run": "npm run build -s >/dev/null 2>&1 && node build/cli.js",
     "prepare": "node scripts/install-git-hooks.js",
     "hooks:install": "node scripts/install-git-hooks.js",
     "generate:version": "npx tsx scripts/generate-version.ts",
@@ -108,6 +109,20 @@
     "tsx": "^4.20.4",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.28.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "wireit": "^0.14.12"
+  },
+  "wireit": {
+    "build": {
+      "command": "npm run build:tsup",
+      "files": [
+        "src/**/*.ts",
+        "tsup.config.ts",
+        "package.json"
+      ],
+      "output": [
+        "build/**"
+      ]
+    }
   }
 }
