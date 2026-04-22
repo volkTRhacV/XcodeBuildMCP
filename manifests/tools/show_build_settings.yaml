@@ -9,13 +9,18 @@ predicates:
 annotations:
   title: Show Build Settings
   readOnlyHint: true
+  destructiveHint: false
+  openWorldHint: false
 nextSteps:
   - label: Build for macOS
     toolId: build_macos
     priority: 1
+    when: success
   - label: Build for iOS Simulator
     toolId: build_sim
     priority: 2
+    when: success
   - label: List schemes
     toolId: list_schemes
     priority: 3
+    when: success

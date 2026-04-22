@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `xcodebuildmcp upgrade` command to check for updates and upgrade in place. Supports `--check` (report-only) and `--yes`/`-y` (skip confirmation). Detects install method (Homebrew, npm-global, npx) and queries the appropriate channel source (`brew info`, `npm view`, or GitHub Releases) for the latest version. Non-interactive environments exit 1 when an auto-upgrade is possible but `--yes` was not supplied.
+
+## [2.3.2]
+
+### Fixed
+
+- Improved reliability of internal telemetry during shutdown ([#302](https://github.com/getsentry/XcodeBuildMCP/pull/302)).
+
+## [2.3.1]
+
+### Fixed
+
+- Fixed unnecessary tool confirmation prompts in MCP clients (such as Codex) that treat missing approval annotations as high-risk defaults ([#297](https://github.com/getsentry/XcodeBuildMCP/pull/297)).
+
 ## [2.3.0]
 
 ### Added
@@ -414,4 +432,5 @@ Please note that the UI automation features are an early preview and currently i
 ## [v1.0.1] - 2025-04-02
 - Initial release of XcodeBuildMCP
 - Basic support for building iOS and macOS applications
+
 

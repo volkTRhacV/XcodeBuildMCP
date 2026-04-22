@@ -8,4 +8,11 @@ predicates:
   - hideWhenXcodeAgentMode
 annotations:
   title: Build macOS
+  readOnlyHint: false
   destructiveHint: false
+  openWorldHint: false
+nextSteps:
+  - label: Get built macOS app path
+    toolId: get_mac_app_path
+    priority: 1
+    when: success

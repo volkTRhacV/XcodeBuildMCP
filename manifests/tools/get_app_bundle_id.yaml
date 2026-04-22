@@ -7,16 +7,22 @@ description: Extract bundle id from .app.
 annotations:
   title: Get App Bundle ID
   readOnlyHint: true
+  destructiveHint: false
+  openWorldHint: false
 nextSteps:
   - label: Install on simulator
     toolId: install_app_sim
     priority: 1
+    when: success
   - label: Launch on simulator
     toolId: launch_app_sim
     priority: 2
+    when: success
   - label: Install on device
     toolId: install_app_device
     priority: 3
+    when: success
   - label: Launch on device
     toolId: launch_app_device
     priority: 4
+    when: success

@@ -6,11 +6,15 @@ names:
 description: Install app on sim.
 annotations:
   title: Install App Simulator
+  readOnlyHint: false
   destructiveHint: false
+  openWorldHint: false
 nextSteps:
   - label: Open the Simulator app
     toolId: open_sim
     priority: 1
+    when: success
   - label: Launch the app
     toolId: launch_app_sim
     priority: 2
+    when: success

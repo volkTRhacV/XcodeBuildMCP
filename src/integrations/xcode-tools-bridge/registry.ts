@@ -139,28 +139,27 @@ function buildBestEffortInputSchema(tool: Tool): z.ZodTypeAny {
   if (!tool.inputSchema) {
     return z.object({}).passthrough();
   }
-  const zod = jsonSchemaToZod(tool.inputSchema);
-  return zod;
+  return jsonSchemaToZod(tool.inputSchema);
 }
 
 function buildBestEffortAnnotations(tool: Tool, localName: string): ToolAnnotations {
   const existing = (tool.annotations ?? {}) as ToolAnnotations;
-
-  if (existing.readOnlyHint !== undefined) {
-    return existing;
-  }
+  const readOnlyHint = existing.readOnlyHint ?? inferReadOnlyHint(localName);
+  const destructiveHint = existing.destructiveHint ?? inferDestructiveHint(localName, readOnlyHint);
+  const openWorldHint = existing.openWorldHint ?? inferOpenWorldHint(localName);
 
   return {
     ...existing,
-    readOnlyHint: inferReadOnlyHint(localName),
+    readOnlyHint,
+    destructiveHint,
+    openWorldHint,
   };
 }
 
 function inferReadOnlyHint(localToolName: string): boolean {
-  // Default to conservative: most IDE tools can mutate project state.
   const name = localToolName.toLowerCase();
 
-  const definitelyReadOnlyPrefixes = [
+  const readOnlyPrefixes = [
     'xcode_tools_xcodelist',
     'xcode_tools_xcodeglob',
     'xcode_tools_xcodegrep',
@@ -171,7 +170,24 @@ function inferReadOnlyHint(localToolName: string): boolean {
     'xcode_tools_gettestlist',
   ];
 
-  if (definitelyReadOnlyPrefixes.some((p) => name.startsWith(p))) return true;
+  return readOnlyPrefixes.some((p) => name.startsWith(p));
+}
 
+function inferDestructiveHint(localToolName: string, readOnlyHint: boolean): boolean {
+  if (readOnlyHint) return false;
+
+  const name = localToolName.toLowerCase();
+  const destructivePrefixes = [
+    'xcode_tools_xcodedelete',
+    'xcode_tools_xcodeclean',
+    'xcode_tools_xcodeerase',
+    'xcode_tools_xcoderemove',
+  ];
+
+  return destructivePrefixes.some((p) => name.startsWith(p));
+}
+
+function inferOpenWorldHint(_localToolName: string): boolean {
+  // Xcode bridge tools are local IDE capabilities, not internet-facing or open-world tools.
   return false;
 }

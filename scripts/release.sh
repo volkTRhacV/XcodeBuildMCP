@@ -481,7 +481,8 @@ run git tag -f "v$VERSION"
 
 echo ""
 echo "🚀 Pushing to origin..."
-run git push origin "$BRANCH" --tags
+run git push origin "$BRANCH"
+run git push origin "v$VERSION"
 
 # In dry-run, stop here (don't monitor workflows, and don't claim a release happened).
 if $DRY_RUN; then
